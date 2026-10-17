@@ -12,6 +12,12 @@ npm run build      # type-check + production build into dist/
 npm test           # simulation/determinism tests
 ```
 
+Requires Node 18+ and npm 9+. If the build fails with
+`Cannot find module @rollup/rollup-<platform>` (or a missing `@esbuild/<platform>`), the
+installed `node_modules` is stale or came from another machine
+([npm/cli#4828](https://github.com/npm/cli/issues/4828)); reinstall cleanly with
+`rm -rf node_modules && npm ci`. The lockfile lists the native packages for every platform.
+
 ## How to play (hot-seat)
 
 | Key | Action |
