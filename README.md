@@ -26,13 +26,34 @@ installed `node_modules` is stale or came from another machine
 | ↑ / ↓ (W / S) | Aim |
 | Enter (J) | Jump |
 | Space (hold, release) | Charge and fire the bazooka |
-| R | New random map |
+| P | Replay the last finished move |
+| Esc | Skip a replay |
+| R | New random map (async: only after the game ends) |
 
 Each turn lasts 30 seconds. Explosions carve the terrain, damage snails by distance and
 knock them back. Falls hurt, and the water is fatal. The last team with snails left wins.
 
 URL options: `?seed=123` (fixed map), `?hp=60`, `?snails=2` (per team, 1-4),
 `?turn=20` (seconds), `?bots=1` (team 2 is a bot) or `?bots=0,1` (bot vs bot).
+
+## Async play (local prototype)
+
+Open two tabs on the same match, one per team:
+
+```
+http://localhost:5173/?team=0&match=demo
+http://localhost:5173/?team=1&match=demo
+```
+
+Each tab controls only its team. A finished turn is saved as a `TurnRecord` (run-length
+encoded inputs plus the state hash after it) into `localStorage`; the other tab gets a
+`storage` event, plays that move back at normal speed and then hands over control. Opening or
+reloading a tab replays the moves made since that player last watched. Add `&bots=N` to let a
+bot play team N inside that tab (e.g. `?team=0&bots=0` and `?team=1&bots=1` for bot vs bot).
+
+`MatchStore` (`src/net/store.ts`) is the seam for a real backend: swap `LocalMatchStore` for
+one that talks to a server, which should run `applyTurn` on each submitted turn to reject
+desyncs and cheats.
 
 ## Architecture
 
@@ -41,10 +62,12 @@ src/sim/     deterministic simulation (no DOM, no Math.random, no wall-clock tim
   game.ts    createGame(config) / step(state, input) -> events / hashState(state)
   terrain.ts bitmask terrain, generation, carving
   math.ts    seeded RNG + engine-independent sin/cos
+  turnlog.ts TurnRecorder / TurnPlayback / applyTurn / rebuild: per-turn input logs
+src/net/     MatchStore: memory (hot-seat) and localStorage (async between tabs)
 src/input/   keyboard -> InputFrame
 src/ai/      bot that produces InputFrames from GameState
 src/render/  Canvas 2D renderer; reads state, consumes events for particles
-src/main.ts  fixed 60 Hz loop wiring input -> step -> render
+src/main.ts  fixed 60 Hz loop: live (record) / replay / waiting modes
 ```
 
 The simulation advances only via `step(state, InputFrame)` at a fixed tick rate. All
