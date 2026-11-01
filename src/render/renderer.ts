@@ -1,7 +1,7 @@
 import { MAP_H, MAP_W, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector } from '../sim/game';
 import type { GameState, SimEvent, Snail } from '../sim/types';
 
-const TEAM_COLORS = ['#ff8a3d', '#5ec8ff'];
+export const TEAM_COLORS = ['#ff8a3d', '#5ec8ff'];
 const TEAM_SHELL = [
   ['#ffb36b', '#c4571c'],
   ['#9fe0ff', '#2a7fb8'],
@@ -37,6 +37,8 @@ export class Renderer {
   private shake = 0;
   private banner: { text: string; color: string; life: number } | null = null;
   private frame = 0;
+  /** Persistent line under the banner, e.g. "Waiting for ..."; set by the app each frame. */
+  status: { text: string; color: string } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     canvas.width = MAP_W;
@@ -456,7 +458,7 @@ export class Renderer {
     ctx.font = '12px system-ui, sans-serif';
     ctx.fillStyle = '#ffffffaa';
     ctx.textAlign = 'left';
-    ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump   hold Space to fire   R restart', 104, 36);
+    ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump   hold Space to fire   P replay last move   R new map', 104, 36);
     ctx.fillText(`Turn ${state.turnNumber}`, 104, 56);
 
     if (this.banner) {
@@ -475,6 +477,17 @@ export class Renderer {
         ctx.fillText(b.text, MAP_W / 2, 110);
         ctx.globalAlpha = 1;
       }
+    }
+
+    if (this.status) {
+      ctx.font = 'bold 16px system-ui, sans-serif';
+      const w = ctx.measureText(this.status.text).width + 32;
+      ctx.fillStyle = '#000b';
+      roundRect(ctx, MAP_W / 2 - w / 2, 134, w, 30, 15);
+      ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = this.status.color;
+      ctx.fillText(this.status.text, MAP_W / 2, 155);
     }
 
     if (state.phase === 'gameover') {
