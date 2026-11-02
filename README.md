@@ -26,9 +26,12 @@ installed `node_modules` is stale or came from another machine
 | ← / → (A / D) | Walk |
 | ↑ / ↓ (W / S) | Aim |
 | Enter (J) | Jump forward; press twice quickly for a high back jump |
-| 1-9 (or click the icon) | Pick a weapon (see below) |
+| Click the weapon box (top right) or right-click | Open the weapon menu, then click a weapon (see below) |
 | Space | Use the weapon (hold and release to charge the bazooka and grenade; press again to stop the drill or blowtorch) |
 | P | Replay the last finished move |
+| M | Whole map on screen (press again to go back) |
+| Drag / mouse wheel | Look around the map / zoom (two-finger pinch on a phone) |
+| C | Camera back on the action |
 | Esc | Skip a replay |
 | R | New random map (async: only after the game ends) |
 
@@ -37,21 +40,21 @@ Explosions carve the terrain, damage snails by distance and knock them back. Fal
 painful fall ends your move), and
 the water is fatal. The last team with snails left wins.
 
-| Key | Weapon | How it works |
-| --- | --- | --- |
-| 1 | Bazooka | Charged shot, wind bends it, explodes on impact |
-| 2 | Grenade | Charged throw, bounces, no wind, explodes after 3 s |
-| 3 | Gun | Two instant shots (25 damage each); you may re-aim between them |
-| 4 | Uzi | Burst of ten bullets (5 each), aim while it fires |
-| 5 | Mine | Dropped at your feet, arms after 2 s, stays between turns, goes off when a snail comes close |
-| 6 | Dynamite | Dropped at your feet, 5 s fuse, the biggest blast |
-| 7 | Drill | Digs straight down for 2.5 s, taking the snail with it (into the water, if deep enough); hurts snails in the way (never below 1 HP) |
-| 8 | Blowtorch | Cuts a tunnel along the aim (at most 60° up or down) for 3 s, taking the snail with it; burns snails in the way (never below 1 HP); it cannot cut out into open air or start mid-jump: out over a gap the snail falls and keeps cutting; a painful fall stops it and ends the move |
-| 9 | Rope | Throws a hook along the aim (reach 260 px, about half a second to fly out); see below |
+| Weapon | How it works |
+| --- | --- |
+| Bazooka | Charged shot, wind bends it, explodes on impact |
+| Grenade | Charged throw, bounces, no wind, explodes after 3 s |
+| Gun | Two instant shots (25 damage each); you may re-aim between them |
+| Uzi | Burst of ten bullets (5 each), aim while it fires |
+| Mine | Dropped at your feet, arms after 2 s, stays between turns, goes off when a snail comes close |
+| Dynamite | Dropped at your feet, 5 s fuse, the biggest blast |
+| Drill | Digs straight down for 2.5 s, taking the snail with it (into the water, if deep enough); hurts snails in the way (never below 1 HP) |
+| Blowtorch | Cuts a tunnel along the aim (at most 60° up or down) for 3 s, taking the snail with it; burns snails in the way (never below 1 HP); it cannot cut out into open air or start mid-jump: out over a gap the snail falls and keeps cutting; a painful fall stops it and ends the move |
+| Rope | Throws a hook along the aim (reach 260 px, about half a second to fly out); see below |
 
 **Rope.** Space shoots the hook; it sticks to the first ground it hits. On the rope, ↑ / ↓
 reel in and out, ← / → push the swing, and Space or Enter lets go, keeping the speed. With a
-mine or dynamite picked (5 / 6), Enter drops it instead and you keep swinging through the
+mine or dynamite picked, Enter drops it instead and you keep swinging through the
 3 s retreat. Space
 again, even in mid-air, shoots a new rope. The rope bends around corners. Roping is not a
 shot: the turn goes on, so you can swing somewhere and then pick a weapon. Swing fast into
@@ -60,8 +63,8 @@ another snail to knock it away (into the water, or off a cliff for a painful fal
 Each team keeps its last weapon between turns. Ammo is unlimited for now.
 
 On a phone, hold it sideways: on-screen buttons appear for walking, aiming, jumping and
-firing; tap a weapon icon to pick it. The top row has replay last move, skip replay, new map
-and full screen. `?touch=1` shows the buttons on a desktop too.
+firing; tap the weapon box to open the weapon menu, then tap a weapon. The top row has replay last move, skip replay, new map,
+whole map (🗺) and full screen. Drag the map with one finger, pinch to zoom. `?touch=1` shows the buttons on a desktop too.
 
 URL options: `?seed=123` (fixed map), `?hp=60`, `?snails=2` (per team, 1-4),
 `?turn=20` (seconds), `?bots=1` (team 2 is a bot) or `?bots=0,1` (bot vs bot).

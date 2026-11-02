@@ -1,13 +1,39 @@
 import { MAP_H, MAP_W, MINE_ARM_TICKS, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { Camera } from './camera';
 import { WEAPONS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
+
+/** Canvas size; the camera shows part of the (bigger) map in it, or all of it zoomed out. */
+export const VIEW_W = 1280;
+export const VIEW_H = 720;
+/** How much sea beside the map and sky above it the camera may show. */
+const CAM_MARGIN = 200;
+const CAM_SKY = 500;
 
 const HUD_MARGIN = 16;
 const WIND_H = 40;
-const TILE = 40;
-const TILE_GAP = 4;
-/** Weapon icons sit in a grid this many wide, under the wind box of the same width. */
-const BAR_COLS = 5;
-const BAR_W = BAR_COLS * (TILE + TILE_GAP) - TILE_GAP;
+const TILE = 44;
+const TILE_GAP = 6;
+/** The weapon menu is a grid this many wide; it grows downward as weapons are added. */
+const MENU_COLS = 5;
+const MENU_PAD = 10;
+const MENU_HEAD = 26;
+const MENU_W = MENU_COLS * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD * 2;
+/** Wind box width; the current-weapon box sits under its right end. */
+const BAR_W = 172;
+
+const WEAPON_NAMES: Record<WeaponId, string> = {
+  bazooka: 'Bazooka',
+  grenade: 'Grenade',
+  gun: 'Gun',
+  uzi: 'Uzi',
+  mine: 'Mine',
+  dynamite: 'Dynamite',
+  drill: 'Drill',
+  torch: 'Blowtorch',
+  rope: 'Rope',
+};
+
+type Rect = { x: number; y: number; size: number };
 
 export const TEAM_COLORS = ['#ff8a3d', '#5ec8ff'];
 const TEAM_SHELL = [
@@ -69,15 +95,22 @@ export class Renderer {
   uiScale = 1;
   /** Touch device: hide key hints. */
   touch = false;
+  readonly camera = new Camera(VIEW_W, VIEW_H, { x0: -CAM_MARGIN, y0: -CAM_SKY, x1: MAP_W + CAM_MARGIN, y1: MAP_H });
+  /** Whole map on screen (M); stays until toggled off. */
+  private overview = false;
+  private zoomBeforeOverview = 1;
+  /** Where the active snail was when the player started looking around; moving it re-follows. */
+  private lookFrom: { x: number; y: number } | null = null;
+  private snapCamera = true;
 
   constructor(canvas: HTMLCanvasElement) {
-    canvas.width = MAP_W;
-    canvas.height = MAP_H;
+    canvas.width = VIEW_W;
+    canvas.height = VIEW_H;
     this.ctx = canvas.getContext('2d')!;
     this.terrainCanvas = document.createElement('canvas');
     this.terrainCanvas.width = MAP_W;
     this.terrainCanvas.height = MAP_H;
-    this.sky = this.ctx.createLinearGradient(0, 0, 0, MAP_H);
+    this.sky = this.ctx.createLinearGradient(0, 0, 0, VIEW_H);
     this.sky.addColorStop(0, '#2b2d5c');
     this.sky.addColorStop(0.55, '#7a5d9e');
     this.sky.addColorStop(1, '#f0a37a');
@@ -89,6 +122,82 @@ export class Renderer {
     this.tracers = [];
     this.terrainVersion = -1;
     this.banner = null;
+    this.snapCamera = true;
+  }
+
+  /** Drag the view by canvas pixels. */
+  panBy(dx: number, dy: number, state: GameState): void {
+    this.lookAround(state);
+    this.camera.panBy(dx, dy);
+  }
+
+  /** Zoom around a canvas point. */
+  zoomAt(x: number, y: number, factor: number, state: GameState): void {
+    this.lookAround(state);
+    this.overview = false;
+    this.camera.zoomAt(x, y, factor);
+  }
+
+  /** Toggles between the whole map and following the action. */
+  toggleOverview(): void {
+    const c = this.camera;
+    if (this.overview) {
+      this.overview = false;
+      c.manual = false;
+      c.zoom = this.zoomBeforeOverview;
+      c.clamp();
+      return;
+    }
+    this.overview = true;
+    this.zoomBeforeOverview = c.zoom;
+    c.manual = true;
+    c.zoom = c.fitZoom;
+    c.clamp();
+  }
+
+  /** Back to following the action at the normal zoom. */
+  recenter(): void {
+    this.overview = false;
+    this.lookFrom = null;
+    this.camera.manual = false;
+    this.camera.zoom = 1;
+  }
+
+  private lookAround(state: GameState): void {
+    if (this.camera.manual) return;
+    const s = activeSnail(state);
+    this.lookFrom = s ? { x: s.x, y: s.y } : null;
+  }
+
+  /** What the camera should watch: something flying, else the snail whose turn it is. */
+  private focus(state: GameState): { x: number; y: number; fast: boolean } | null {
+    const shell = state.objects.find((o) => o.kind === 'shell');
+    if (shell) return { x: shell.x, y: shell.y, fast: true };
+    if (state.hook) return { x: state.hook.x, y: state.hook.y, fast: true };
+    const thrown = state.objects.find((o) => !o.resting && o.kind !== 'mine');
+    if (thrown) return { x: thrown.x, y: thrown.y, fast: true };
+    const s = activeSnail(state);
+    if (s && s.alive) return { x: s.x, y: s.y, fast: false };
+    return null;
+  }
+
+  private updateCamera(state: GameState): void {
+    const c = this.camera;
+    const s = activeSnail(state);
+    // Looking around by hand ends once the snail moves (walking, falling, swinging).
+    if (c.manual && !this.overview && this.lookFrom && s && Math.hypot(s.x - this.lookFrom.x, s.y - this.lookFrom.y) > 6) {
+      c.manual = false;
+      this.lookFrom = null;
+    }
+    if (c.manual) return;
+    const f = this.focus(state);
+    if (!f) return;
+    if (this.snapCamera) {
+      c.centerOn(f.x, f.y);
+      this.snapCamera = false;
+    } else {
+      c.follow(f.x, f.y, f.fast ? 0.15 : 0.08);
+    }
   }
 
   handleEvents(state: GameState, events: SimEvent[]): void {
@@ -191,6 +300,8 @@ export class Renderer {
           this.texts.push({ x: e.x, y: e.y - 16, text: 'beep!', color: '#ff5555', life: 0 });
           break;
         case 'turn': {
+          if (!this.overview) this.camera.manual = false;
+          this.lookFrom = null;
           const s = state.snails[e.snailId];
           this.banner = { text: `${state.teams[e.team].name}: ${s.name}'s turn`, color: TEAM_COLORS[e.team], life: 0 };
           break;
@@ -241,6 +352,9 @@ export class Renderer {
     this.frame++;
     if (this.terrainVersion !== state.terrain.version) this.rebuildTerrain(state);
 
+    this.updateCamera(state);
+    const cam = this.camera;
+
     ctx.save();
     if (this.shake > 0) {
       ctx.translate((Math.random() - 0.5) * this.shake, (Math.random() - 0.5) * this.shake);
@@ -248,7 +362,10 @@ export class Renderer {
       if (this.shake < 0.5) this.shake = 0;
     }
     ctx.fillStyle = this.sky;
-    ctx.fillRect(-20, -20, MAP_W + 40, MAP_H + 40);
+    ctx.fillRect(-20, -20, VIEW_W + 40, VIEW_H + 40);
+    ctx.translate(VIEW_W / 2, VIEW_H / 2);
+    ctx.scale(cam.zoom, cam.zoom);
+    ctx.translate(-cam.x, -cam.y);
     this.drawBackdrop(ctx);
     ctx.drawImage(this.terrainCanvas, 0, 0);
 
@@ -263,35 +380,48 @@ export class Renderer {
     ctx.restore();
 
     this.drawHud(ctx, state);
+    this.drawWeaponMenu(ctx, state);
   }
 
   private drawBackdrop(ctx: CanvasRenderingContext2D): void {
+    const v = this.camera.visible();
+    const x0 = -CAM_MARGIN;
+    const span = MAP_W + CAM_MARGIN * 2 + 300;
     ctx.fillStyle = '#ffffff14';
-    for (let i = 0; i < 6; i++) {
-      const x = ((i * 260 + this.frame * 0.15 * (1 + (i % 3))) % (MAP_W + 300)) - 150;
-      const y = 60 + (i * 47) % 160;
+    const clouds = Math.ceil(span / 260);
+    for (let i = 0; i < clouds; i++) {
+      const x = x0 + ((i * 260 + this.frame * 0.15 * (1 + (i % 3))) % span) - 150;
+      const y = MAP_H * 0.08 + ((i * 47) % 220);
       ctx.beginPath();
       ctx.ellipse(x, y, 90, 22, 0, 0, Math.PI * 2);
       ctx.ellipse(x + 50, y - 12, 60, 20, 0, 0, Math.PI * 2);
       ctx.fill();
     }
+    // Distant hills, a little past whatever is on screen.
     ctx.fillStyle = '#3d2f5a';
     ctx.beginPath();
-    ctx.moveTo(0, MAP_H);
-    for (let x = 0; x <= MAP_W; x += 40) ctx.lineTo(x, 470 - 70 * Math.sin(x * 0.006) - 30 * Math.sin(x * 0.019));
-    ctx.lineTo(MAP_W, MAP_H);
+    const left = Math.floor(v.x0 / 40) * 40 - 40;
+    const right = v.x1 + 40;
+    const base = MAP_H * 0.65;
+    ctx.moveTo(left, MAP_H);
+    for (let x = left; x <= right; x += 40) ctx.lineTo(x, base - 70 * Math.sin(x * 0.006) - 30 * Math.sin(x * 0.019));
+    ctx.lineTo(right, MAP_H);
     ctx.fill();
   }
 
   private drawWater(ctx: CanvasRenderingContext2D): void {
+    const v = this.camera.visible();
+    const left = Math.floor(v.x0 / 16) * 16 - 16;
+    const right = v.x1 + 16;
+    const bottom = Math.max(MAP_H, v.y1) + 20;
     ctx.fillStyle = '#2d6fa8cc';
     ctx.beginPath();
-    ctx.moveTo(0, MAP_H);
-    for (let x = 0; x <= MAP_W; x += 16) ctx.lineTo(x, WATER_Y + 3 * Math.sin(x * 0.04 + this.frame * 0.06));
-    ctx.lineTo(MAP_W, MAP_H);
+    ctx.moveTo(left, bottom);
+    for (let x = left; x <= right; x += 16) ctx.lineTo(x, WATER_Y + 3 * Math.sin(x * 0.04 + this.frame * 0.06));
+    ctx.lineTo(right, bottom);
     ctx.fill();
     ctx.fillStyle = '#1d4f80';
-    ctx.fillRect(0, WATER_Y + 14, MAP_W, MAP_H);
+    ctx.fillRect(left, WATER_Y + 14, right - left, bottom - WATER_Y);
   }
 
   private drawSnail(ctx: CanvasRenderingContext2D, state: GameState, s: Snail): void {
@@ -754,25 +884,57 @@ export class Renderer {
     this.texts = texts;
   }
 
-  /** Corner of weapon tile i (0-based) in canvas pixels, after uiScale. */
-  private weaponTile(i: number): { x: number; y: number; size: number } {
+  /** The box showing the current weapon; tapping it opens the weapon menu. */
+  private weaponBox(): Rect {
     const k = this.uiScale;
-    const col = i % BAR_COLS;
-    const row = Math.floor(i / BAR_COLS);
+    return { x: VIEW_W - HUD_MARGIN - TILE * k, y: HUD_MARGIN + (WIND_H + TILE_GAP) * k, size: TILE * k };
+  }
+
+  /** Top-left of the open menu panel, right under the weapon box. */
+  private menuOrigin(): { x: number; y: number } {
+    const k = this.uiScale;
+    const box = this.weaponBox();
+    return { x: VIEW_W - HUD_MARGIN - MENU_W * k, y: box.y + box.size + TILE_GAP * k };
+  }
+
+  /** Weapon tile i (0-based) in the open menu, in canvas pixels. */
+  private menuTile(i: number): Rect {
+    const k = this.uiScale;
+    const o = this.menuOrigin();
     return {
-      x: MAP_W - HUD_MARGIN - BAR_W * k + col * (TILE + TILE_GAP) * k,
-      y: HUD_MARGIN + (WIND_H + TILE_GAP * 2 + row * (TILE + TILE_GAP)) * k,
+      x: o.x + (MENU_PAD + (i % MENU_COLS) * (TILE + TILE_GAP)) * k,
+      y: o.y + (MENU_HEAD + Math.floor(i / MENU_COLS) * (TILE + TILE_GAP)) * k,
       size: TILE * k,
     };
   }
 
-  /** 1-based weapon index under a point in canvas pixels, or 0. */
-  weaponAt(x: number, y: number): number {
-    for (let i = 0; i < WEAPONS.length; i++) {
-      const t = this.weaponTile(i);
-      if (x >= t.x && x <= t.x + t.size && y >= t.y && y <= t.y + t.size) return i + 1;
+  /** Weapons can only be switched before using one. */
+  private weaponsLocked(state: GameState): boolean {
+    return state.phase !== 'aiming' || state.shotsFired > 0 || state.charging;
+  }
+
+  /** The weapon menu is open (tap the weapon box or right-click to open it). */
+  menuOpen = false;
+
+  toggleMenu(state: GameState): void {
+    this.menuOpen = !this.menuOpen && !this.weaponsLocked(state);
+  }
+
+  /**
+   * A tap or click at a canvas point. `used` says the HUD took it (so it does not drag the
+   * map); `weapon` is the 1-based weapon picked from the menu, or 0.
+   */
+  tap(x: number, y: number, state: GameState): { used: boolean; weapon: number } {
+    const inside = (r: Rect) => x >= r.x && x <= r.x + r.size && y >= r.y && y <= r.y + r.size;
+    if (inside(this.weaponBox())) {
+      this.toggleMenu(state);
+      return { used: true, weapon: 0 };
     }
-    return 0;
+    if (!this.menuOpen) return { used: false, weapon: 0 };
+    this.menuOpen = false;
+    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(i))) return { used: true, weapon: i + 1 };
+    // A tap anywhere else just closes the menu.
+    return { used: true, weapon: 0 };
   }
 
   /** Draws `fn` with the origin at (x, y), scaled by uiScale around that point. */
@@ -784,16 +946,61 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** The current weapon's box with its name beside it. */
   private drawWeaponBar(ctx: CanvasRenderingContext2D, state: GameState): void {
     const current = state.teams[state.activeTeam]?.weapon;
-    // Dim the bar while switching is not possible.
-    const locked = state.phase !== 'aiming' || state.shotsFired > 0 || state.charging;
+    if (!current) return;
+    const locked = this.weaponsLocked(state);
+    if (locked) this.menuOpen = false;
+    const t = this.weaponBox();
+    const k = t.size / TILE;
+    ctx.globalAlpha = locked ? 0.6 : 1;
+    ctx.fillStyle = '#000c';
+    roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
+    ctx.fill();
+    ctx.strokeStyle = TEAM_COLORS[state.activeTeam];
+    ctx.lineWidth = 2.5 * k;
+    ctx.stroke();
+    drawWeaponIcon(ctx, current, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
+    // A small arrow says it opens.
+    if (!locked) {
+      ctx.fillStyle = '#fffc';
+      ctx.beginPath();
+      ctx.moveTo(t.x + t.size - 12 * k, t.y + t.size - 8 * k);
+      ctx.lineTo(t.x + t.size - 4 * k, t.y + t.size - 8 * k);
+      ctx.lineTo(t.x + t.size - 8 * k, t.y + t.size - 3 * k);
+      ctx.fill();
+    }
+    ctx.font = `bold ${Math.round(13 * k)}px Verdana, Arial, Helvetica, sans-serif`;
+    ctx.textAlign = 'right';
+    ctx.lineWidth = 3 * k;
+    ctx.strokeStyle = '#000a';
+    const label = WEAPON_NAMES[current];
+    ctx.strokeText(label, t.x - 8 * k, t.y + t.size / 2 + 5 * k);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, t.x - 8 * k, t.y + t.size / 2 + 5 * k);
+    ctx.globalAlpha = 1;
+  }
+
+  /** The open weapon menu: every weapon as an icon, tap one to pick it. */
+  private drawWeaponMenu(ctx: CanvasRenderingContext2D, state: GameState): void {
+    if (!this.menuOpen) return;
+    const current = state.teams[state.activeTeam]?.weapon;
+    const k = this.uiScale;
+    const o = this.menuOrigin();
+    const rows = Math.ceil(WEAPONS.length / MENU_COLS);
+    const h = MENU_HEAD + rows * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD;
+    ctx.fillStyle = '#000d';
+    roundRect(ctx, o.x, o.y, MENU_W * k, h * k, 12 * k);
+    ctx.fill();
+    ctx.font = `bold ${Math.round(12 * k)}px Verdana, Arial, Helvetica, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ddd';
+    ctx.fillText('Pick a weapon', o.x + MENU_PAD * k, o.y + 18 * k);
     WEAPONS.forEach((id, i) => {
-      const t = this.weaponTile(i);
-      const k = t.size / TILE;
+      const t = this.menuTile(i);
       const on = id === current;
-      ctx.globalAlpha = locked && !on ? 0.45 : 1;
-      ctx.fillStyle = on ? '#000c' : '#0007';
+      ctx.fillStyle = on ? '#ffffff22' : '#ffffff0d';
       roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
       ctx.fill();
       if (on) {
@@ -801,15 +1008,11 @@ export class Renderer {
         ctx.lineWidth = 2.5 * k;
         ctx.stroke();
       }
-      if (!on) ctx.globalAlpha *= 0.7;
-      drawWeaponIcon(ctx, id, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
-      ctx.globalAlpha = 1;
-      if (!this.touch) {
-        ctx.font = `bold ${Math.round(10 * k)}px Verdana, Arial, Helvetica, sans-serif`;
-        ctx.textAlign = 'left';
-        ctx.fillStyle = '#fffa';
-        ctx.fillText(String(i + 1), t.x + 4 * k, t.y + 11 * k);
-      }
+      drawWeaponIcon(ctx, id, t.x + t.size / 2, t.y + t.size / 2 - 4 * k, t.size * 0.66);
+      ctx.font = `${Math.round(8 * k)}px Verdana, Arial, Helvetica, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ddd';
+      ctx.fillText(WEAPON_NAMES[id], t.x + t.size / 2, t.y + t.size - 4 * k);
     });
   }
 
@@ -834,13 +1037,13 @@ export class Renderer {
       ctx.fillStyle = '#ffffffaa';
       ctx.textAlign = 'left';
       if (!this.touch) {
-        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   1-9 weapon   Space fire   P replay last move   R new map', 88, 20);
+        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   click weapon box   Space fire   P replay   M map   drag/wheel look   C center   R new map', 88, 20);
       }
       ctx.fillText(`Turn ${state.turnNumber}`, 88, 40);
     });
 
     // Wind.
-    this.anchored(ctx, MAP_W - HUD_MARGIN, HUD_MARGIN, () => {
+    this.anchored(ctx, VIEW_W - HUD_MARGIN, HUD_MARGIN, () => {
       const w = BAR_W;
       ctx.fillStyle = '#000a';
       roundRect(ctx, -w, 0, w, WIND_H, 10);
@@ -865,7 +1068,7 @@ export class Renderer {
     this.drawWeaponBar(ctx, state);
 
     // Team health bars.
-    this.anchored(ctx, MAP_W / 2, MAP_H - HUD_MARGIN, () => {
+    this.anchored(ctx, VIEW_W / 2, VIEW_H - HUD_MARGIN, () => {
       const maxTotal = state.config.startHp * state.config.snailsPerTeam;
       state.teams.forEach((t, i) => {
         const hp = state.snails.filter((s) => s.team === t.id && s.alive).reduce((a, s) => a + Math.max(0, s.hp), 0);
@@ -883,7 +1086,7 @@ export class Renderer {
       });
     });
 
-    this.anchored(ctx, MAP_W / 2, 0, () => {
+    this.anchored(ctx, VIEW_W / 2, 0, () => {
       if (this.banner) {
         this.banner.life++;
         const b = this.banner;
@@ -915,8 +1118,8 @@ export class Renderer {
 
     if (state.phase === 'gameover') {
       ctx.fillStyle = '#000b';
-      ctx.fillRect(0, 0, MAP_W, MAP_H);
-      this.anchored(ctx, MAP_W / 2, MAP_H / 2, () => {
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      this.anchored(ctx, VIEW_W / 2, VIEW_H / 2, () => {
         ctx.textAlign = 'center';
         ctx.font = 'bold 56px Verdana, Arial, Helvetica, sans-serif';
         const won = state.winner !== null && state.winner >= 0;

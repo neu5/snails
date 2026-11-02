@@ -27,6 +27,13 @@ function playMatch(seed: number, maxTicks: number): { match: MatchRecord; finalH
 }
 
 describe('turn log', () => {
+  it('packs weapon picks up to 63 next to the keys', () => {
+    for (const weapon of [1, 15, 16, 40, 63]) {
+      const frame: InputFrame = { ...EMPTY_INPUT, fire: true, left: true, weapon };
+      expect(unpackInput(packInput(frame))).toEqual(frame);
+    }
+  });
+
   it('packs and run-length encodes inputs losslessly', () => {
     const a: InputFrame = { ...EMPTY_INPUT, left: true, fire: true };
     expect(unpackInput(packInput(a))).toEqual(a);

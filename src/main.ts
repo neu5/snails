@@ -2,8 +2,8 @@ import { Bot } from './ai/bot';
 import { KeyboardInput } from './input/keyboard';
 import { addTouchControls } from './input/touch';
 import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store';
-import { Renderer, TEAM_COLORS } from './render/renderer';
-import { DEFAULT_CONFIG, MAP_H, MAP_W, TICK_RATE, createGame } from './sim/game';
+import { Renderer, TEAM_COLORS, VIEW_H, VIEW_W } from './render/renderer';
+import { DEFAULT_CONFIG, TICK_RATE, createGame } from './sim/game';
 import { TurnPlayback, TurnRecorder, applyTurn, rebuild, type MatchRecord, type TurnRecord } from './sim/turnlog';
 import type { GameConfig, GameState } from './sim/types';
 
@@ -31,17 +31,59 @@ if (touch) addTouchControls(keyboard);
 
 // Grow the HUD when the canvas is drawn small so its text stays readable.
 function fitUi(): void {
-  renderer.uiScale = Math.min(1.8, Math.max(1, (0.75 * MAP_W) / (canvas.clientWidth || MAP_W)));
+  renderer.uiScale = Math.min(1.8, Math.max(1, (0.75 * VIEW_W) / (canvas.clientWidth || VIEW_W)));
 }
 window.addEventListener('resize', fitUi);
 fitUi();
 
-// Tapping or clicking the weapon bar picks a weapon.
-canvas.addEventListener('pointerdown', (e) => {
+/** Pointer position in canvas pixels. */
+function canvasPoint(e: { clientX: number; clientY: number }): [number, number] {
   const r = canvas.getBoundingClientRect();
-  const n = renderer.weaponAt(((e.clientX - r.left) * MAP_W) / r.width, ((e.clientY - r.top) * MAP_H) / r.height);
-  if (n) keyboard.pickWeapon(n);
+  return [((e.clientX - r.left) * VIEW_W) / r.width, ((e.clientY - r.top) * VIEW_H) / r.height];
+}
+
+// Tapping the weapon box opens the weapon menu, tapping a weapon there picks it. Dragging
+// elsewhere looks around the map, two fingers pinch to zoom. Right-click also opens the menu.
+const pointers = new Map<number, [number, number]>();
+canvas.addEventListener('pointerdown', (e) => {
+  const [x, y] = canvasPoint(e);
+  if (e.button !== 0) return;
+  const { used, weapon } = renderer.tap(x, y, state);
+  if (weapon) keyboard.pickWeapon(weapon);
+  if (used) return;
+  pointers.set(e.pointerId, [x, y]);
+  canvas.setPointerCapture(e.pointerId);
 });
+canvas.addEventListener('pointermove', (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  const [x, y] = canvasPoint(e);
+  if (pointers.size === 1) {
+    renderer.panBy(x - prev[0], y - prev[1], state);
+  } else if (pointers.size === 2) {
+    const other = [...pointers.entries()].find(([id]) => id !== e.pointerId)![1];
+    const before = Math.hypot(prev[0] - other[0], prev[1] - other[1]);
+    const after = Math.hypot(x - other[0], y - other[1]);
+    if (before > 10) renderer.zoomAt((x + other[0]) / 2, (y + other[1]) / 2, after / before, state);
+  }
+  pointers.set(e.pointerId, [x, y]);
+});
+const lift = (e: PointerEvent) => pointers.delete(e.pointerId);
+canvas.addEventListener('pointerup', lift);
+canvas.addEventListener('pointercancel', lift);
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  renderer.toggleMenu(state);
+});
+canvas.addEventListener(
+  'wheel',
+  (e) => {
+    e.preventDefault();
+    const [x, y] = canvasPoint(e);
+    renderer.zoomAt(x, y, Math.exp(-e.deltaY * 0.0015), state);
+  },
+  { passive: false },
+);
 const baseTitle = document.title;
 
 type Mode =
@@ -230,7 +272,12 @@ keyboard.bind('KeyR', () => {
   if (!asyncPlay || state.phase === 'gameover') void newMatch(Math.floor(Math.random() * 1e9));
 });
 keyboard.bind('KeyP', watchLastTurn);
-keyboard.bind('Escape', skipReplay);
+keyboard.bind('KeyM', () => renderer.toggleOverview());
+keyboard.bind('KeyC', () => renderer.recenter());
+keyboard.bind('Escape', () => {
+  if (renderer.menuOpen) renderer.menuOpen = false;
+  else skipReplay();
+});
 
 function teamName(team: number): string {
   return state.teams[team]?.name ?? `Team ${team + 1}`;

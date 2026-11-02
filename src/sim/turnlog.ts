@@ -33,11 +33,11 @@ export class DesyncError extends Error {
 }
 
 const KEYS = ['left', 'right', 'up', 'down', 'jump', 'fire'] as const;
-/** Bits 0-5 are KEYS, bits 6-9 the weapon key. */
+/** Bits 0-5 are KEYS, bits 6-11 the weapon picked (up to 63 weapons). */
 const WEAPON_SHIFT = KEYS.length;
 
 export function packInput(input: InputFrame): number {
-  let bits = (input.weapon & 15) << WEAPON_SHIFT;
+  let bits = (input.weapon & 63) << WEAPON_SHIFT;
   KEYS.forEach((k, i) => {
     if (input[k]) bits |= 1 << i;
   });
@@ -45,7 +45,7 @@ export function packInput(input: InputFrame): number {
 }
 
 export function unpackInput(bits: number): InputFrame {
-  const out = { ...EMPTY_INPUT, weapon: (bits >> WEAPON_SHIFT) & 15 };
+  const out = { ...EMPTY_INPUT, weapon: (bits >> WEAPON_SHIFT) & 63 };
   KEYS.forEach((k, i) => {
     out[k] = (bits & (1 << i)) !== 0;
   });
