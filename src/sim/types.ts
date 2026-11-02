@@ -25,17 +25,59 @@ export const EMPTY_INPUT: InputFrame = {
   weapon: 0,
 };
 
-export type WeaponId = 'bazooka' | 'grenade' | 'gun' | 'uzi' | 'mine' | 'dynamite' | 'drill' | 'torch' | 'rope';
+export type WeaponId =
+  | 'bazooka'
+  | 'grenade'
+  | 'cluster'
+  | 'gun'
+  | 'uzi'
+  | 'punch'
+  | 'poke'
+  | 'kamikaze'
+  | 'mine'
+  | 'dynamite'
+  | 'drill'
+  | 'torch'
+  | 'girder'
+  | 'rope'
+  | 'parachute'
+  | 'hide';
 
 /** Order in the weapon menu; InputFrame.weapon indexes this (1-based). */
-export const WEAPONS: readonly WeaponId[] = ['bazooka', 'grenade', 'gun', 'uzi', 'mine', 'dynamite', 'drill', 'torch', 'rope'];
+export const WEAPONS: readonly WeaponId[] = [
+  'bazooka',
+  'grenade',
+  'cluster',
+  'gun',
+  'uzi',
+  'punch',
+  'poke',
+  'kamikaze',
+  'mine',
+  'dynamite',
+  'drill',
+  'torch',
+  'girder',
+  'rope',
+  'parachute',
+  'hide',
+];
 
 /**
  * aiming: walk, aim, pick and use a weapon. firing: an uzi burst is running (aim only).
  * digging: drill or blowtorch is cutting through the ground and carries the snail along.
+ * kamikaze: the snail flies along its aim until it hits something and blows up.
  * retreat: weapon used, the snail may still walk and jump. settling: wait for things to stop.
  */
-export type Phase = 'aiming' | 'firing' | 'digging' | 'retreat' | 'settling' | 'gameover';
+export type Phase = 'aiming' | 'firing' | 'digging' | 'kamikaze' | 'retreat' | 'settling' | 'gameover';
+
+/** A kamikaze snail in flight. */
+export interface Kamikaze {
+  /** Unit direction. */
+  dx: number;
+  dy: number;
+  ticksLeft: number;
+}
 
 /** A point the rope hangs from: the anchor, or a corner it wrapped around. */
 export interface RopePivot {
@@ -94,6 +136,8 @@ export interface Snail {
   facing: 1 | -1;
   /** Aim angle in integer degrees relative to facing; +90 is straight up, -90 straight down. */
   aim: number;
+  /** Tucked into its shell (skipped its move); out again on its next turn. */
+  hidden: boolean;
 }
 
 export interface Team {
@@ -105,7 +149,8 @@ export interface Team {
   weapon: WeaponId;
 }
 
-export type ObjectKind = 'shell' | 'grenade' | 'mine' | 'dynamite';
+/** A cluster bomb bursts into bomblets, which go off on impact. */
+export type ObjectKind = 'shell' | 'grenade' | 'mine' | 'dynamite' | 'cluster' | 'bomblet';
 
 /** Anything flying or lying on the map. Mines stay between turns. */
 export interface Projectile {
@@ -156,6 +201,9 @@ export interface GameState {
   dig: Dig | null;
   rope: Rope | null;
   hook: Hook | null;
+  kamikaze: Kamikaze | null;
+  /** The active snail floats down under a parachute. */
+  parachute: boolean;
   /** Horizontal acceleration applied to projectiles, px/tick^2. */
   wind: number;
   settleTicks: number;
@@ -178,5 +226,8 @@ export type SimEvent =
   | { type: 'rope'; x0: number; y0: number; x1: number; y1: number; hit: boolean }
   /** A swinging snail slammed into another one. */
   | { type: 'knock'; x: number; y: number }
+  /** Punch or poke; hit says whether it reached a snail. */
+  | { type: 'punch'; x: number; y: number; hit: boolean; poke: boolean }
+  | { type: 'hide'; snailId: number }
   | { type: 'turn'; team: number; snailId: number }
   | { type: 'gameover'; winner: number };

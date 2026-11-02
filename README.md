@@ -1,7 +1,7 @@
 # Snails
 
 A turn-based artillery game for the browser: two teams of snails take turns blasting each
-other across a destructible island with bazookas, grenades, guns, uzis, mines and dynamite,
+other across a destructible island with bazookas, grenades, cluster bombs, guns, uzis, punches, mines and dynamite,
 or dig through it with a drill and a blowtorch, or swing across it on a rope. Original art (drawn in code) and names.
 
 ## Run
@@ -44,13 +44,20 @@ the water is fatal. The last team with snails left wins.
 | --- | --- |
 | Bazooka | Charged shot, wind bends it, explodes on impact |
 | Grenade | Charged throw, bounces, no wind, explodes after 3 s |
+| Cluster | Like the grenade, but bursts into five bomblets that go off where they land |
 | Gun | Two instant shots (25 damage each); you may re-aim between them |
 | Uzi | Burst of ten bullets (5 each), aim while it fires |
+| Punch | Hits the snail right in front for 30 and sends it flying |
+| Poke | Nudges the snail in front; no damage (good for pushing it off a ledge) |
+| Kamikaze | Your snail flies along the aim and blows up on the first thing it hits (it does not survive) |
 | Mine | Dropped at your feet, arms after 2 s, stays between turns, goes off when a snail comes close |
 | Dynamite | Dropped at your feet, 5 s fuse, the biggest blast |
 | Drill | Digs straight down for 2.5 s, taking the snail with it (into the water, if deep enough); hurts snails in the way (never below 1 HP) |
 | Blowtorch | Cuts a tunnel along the aim (at most 60° up or down) for 3 s, taking the snail with it; burns snails in the way (never below 1 HP); it cannot cut out into open air or start mid-jump: out over a gap the snail falls and keeps cutting; a painful fall stops it and ends the move |
+| Platform | Puts a steel platform in front of you along the aim (tilts up to 60°); handy as a bridge or a ramp |
 | Rope | Throws a hook along the aim (reach 260 px, about half a second to fly out); see below |
+| Parachute | Opens in the air (jump off a ledge, then fire): slow, safe fall, ←/→ steer, wind drifts it; not a shot, the turn goes on |
+| Hide | Tuck into the shell and skip your move |
 
 **Rope.** Space shoots the hook; it sticks to the first ground it hits. On the rope, ↑ / ↓
 reel in and out, ← / → push the swing, and Space or Enter lets go, keeping the speed. With a
