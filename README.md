@@ -2,7 +2,7 @@
 
 A turn-based artillery game for the browser: two teams of snails take turns blasting each
 other across a destructible island with bazookas, grenades, guns, uzis, mines and dynamite,
-or dig through it with a drill and a blowtorch. Original art (drawn in code) and names.
+or dig through it with a drill and a blowtorch, or swing across it on a rope. Original art (drawn in code) and names.
 
 ## Run
 
@@ -26,7 +26,7 @@ installed `node_modules` is stale or came from another machine
 | ← / → (A / D) | Walk |
 | ↑ / ↓ (W / S) | Aim |
 | Enter (J) | Jump forward; press twice quickly for a high back jump |
-| 1-8 (or click the icon) | Pick a weapon (see below) |
+| 1-9 (or click the icon) | Pick a weapon (see below) |
 | Space | Use the weapon (hold and release to charge the bazooka and grenade; press again to stop the drill or blowtorch) |
 | P | Replay the last finished move |
 | Esc | Skip a replay |
@@ -47,6 +47,15 @@ the water is fatal. The last team with snails left wins.
 | 6 | Dynamite | Dropped at your feet, 5 s fuse, the biggest blast |
 | 7 | Drill | Digs straight down for 2.5 s, taking the snail with it (into the water, if deep enough); hurts snails in the way (never below 1 HP) |
 | 8 | Blowtorch | Cuts a tunnel along the aim (at most 60° up or down) for 3 s, taking the snail with it; burns snails in the way (never below 1 HP); it cannot cut out into open air or start mid-jump: out over a gap the snail falls and keeps cutting; a painful fall stops it and ends the move |
+| 9 | Rope | Throws a hook along the aim (reach 260 px, about half a second to fly out); see below |
+
+**Rope.** Space shoots the hook; it sticks to the first ground it hits. On the rope, ↑ / ↓
+reel in and out, ← / → push the swing, and Space or Enter lets go, keeping the speed. With a
+mine or dynamite picked (5 / 6), Enter drops it instead and you keep swinging through the
+3 s retreat. Space
+again, even in mid-air, shoots a new rope. The rope bends around corners. Roping is not a
+shot: the turn goes on, so you can swing somewhere and then pick a weapon. Swing fast into
+another snail to knock it away (into the water, or off a cliff for a painful fall).
 
 Each team keeps its last weapon between turns. Ammo is unlimited for now.
 
