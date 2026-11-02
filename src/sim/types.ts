@@ -25,10 +25,10 @@ export const EMPTY_INPUT: InputFrame = {
   weapon: 0,
 };
 
-export type WeaponId = 'bazooka' | 'grenade' | 'gun' | 'uzi' | 'mine' | 'dynamite' | 'drill' | 'torch' | 'rope';
+export type WeaponId = 'bazooka' | 'grenade' | 'gun' | 'uzi' | 'mine' | 'dynamite' | 'drill' | 'torch';
 
-/** Selection order; keys 1-9 pick these. */
-export const WEAPONS: readonly WeaponId[] = ['bazooka', 'grenade', 'gun', 'uzi', 'mine', 'dynamite', 'drill', 'torch', 'rope'];
+/** Selection order; keys 1-8 pick these. */
+export const WEAPONS: readonly WeaponId[] = ['bazooka', 'grenade', 'gun', 'uzi', 'mine', 'dynamite', 'drill', 'torch'];
 
 /**
  * aiming: walk, aim, pick and use a weapon. firing: an uzi burst is running (aim only).
@@ -36,36 +36,6 @@ export const WEAPONS: readonly WeaponId[] = ['bazooka', 'grenade', 'gun', 'uzi',
  * retreat: weapon used, the snail may still walk and jump. settling: wait for things to stop.
  */
 export type Phase = 'aiming' | 'firing' | 'digging' | 'retreat' | 'settling' | 'gameover';
-
-/** A point the rope hangs from: the anchor, or a corner it wrapped around. */
-export interface RopePivot {
-  x: number;
-  y: number;
-  /**
-   * For corners: the side (sign of the cross product) the snail swung in from. Swinging
-   * back to that side unwraps the corner.
-   */
-  side: number;
-}
-
-/** The active snail swinging on a rope. Not a used weapon: the turn goes on while it swings. */
-export interface Rope {
-  /** Anchor first, then each wrapped corner; the snail swings from the last one. */
-  pivots: RopePivot[];
-  /** Free rope from the last pivot to the snail. */
-  len: number;
-}
-
-/** The rope's hook on its way out; it becomes a Rope when it hits ground. */
-export interface Hook {
-  x: number;
-  y: number;
-  /** Unit direction of flight. */
-  dx: number;
-  dy: number;
-  /** Distance flown so far. */
-  dist: number;
-}
 
 /** A drill or blowtorch at work: the snail is pinned to (x, y), which moves along (dx, dy). */
 export interface Dig {
@@ -154,8 +124,6 @@ export interface GameState {
   jumpTicks: number;
   objects: Projectile[];
   dig: Dig | null;
-  rope: Rope | null;
-  hook: Hook | null;
   /** Horizontal acceleration applied to projectiles, px/tick^2. */
   wind: number;
   settleTicks: number;
@@ -175,8 +143,5 @@ export type SimEvent =
   | { type: 'bullet'; x0: number; y0: number; x1: number; y1: number; hit: boolean }
   | { type: 'mineTriggered'; x: number; y: number }
   | { type: 'dig'; x: number; y: number }
-  | { type: 'rope'; x0: number; y0: number; x1: number; y1: number; hit: boolean }
-  /** A swinging snail slammed into another one. */
-  | { type: 'knock'; x: number; y: number }
   | { type: 'turn'; team: number; snailId: number }
   | { type: 'gameover'; winner: number };

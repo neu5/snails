@@ -8,7 +8,6 @@ import {
   type InputFrame,
   type ObjectKind,
   type Projectile,
-  type Rope,
   type SimEvent,
   type Snail,
   type WeaponId,
@@ -186,8 +185,6 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     burstTicks: 0,
     retreatTicks: 0,
     jumpTicks: 0,
-    rope: null,
-    hook: null,
     objects: [],
     dig: null,
     wind: 0,
@@ -238,8 +235,6 @@ function startTurn(state: GameState, team: number, events: SimEvent[]): void {
   state.retreatTicks = 0;
   state.jumpTicks = 0;
   state.dig = null;
-  state.rope = null;
-  state.hook = null;
   // Only mines outlive a turn; anything else still around timed out while settling.
   state.objects = state.objects.filter((o) => o.kind === 'mine');
   state.settleTicks = 0;
@@ -291,11 +286,6 @@ export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grena
 
 /** Mines and dynamite are dropped just in front of the snail. */
 function dropObject(state: GameState, s: Snail, kind: 'mine' | 'dynamite'): Projectile {
-  const fuse = kind === 'dynamite' ? DYNAMITE_FUSE : -1;
-  // Let go of from a rope, it falls from under the snail with the swing's speed.
-  if (state.rope) {
-    return { kind, x: s.x, y: s.y + 4, vx: s.vx, vy: s.vy, age: 0, ownerId: s.id, fuse, resting: false };
-  }
   const front = s.x + s.facing * (SNAIL_R + 2);
   return {
     kind,
@@ -305,7 +295,7 @@ function dropObject(state: GameState, s: Snail, kind: 'mine' | 'dynamite'): Proj
     vy: -1.2,
     age: 0,
     ownerId: s.id,
-    fuse,
+    fuse: kind === 'dynamite' ? DYNAMITE_FUSE : -1,
     resting: false,
   };
 }
@@ -589,8 +579,6 @@ export function effectiveInput(state: GameState, input: InputFrame): InputFrame 
     case 'digging':
       return { ...EMPTY_INPUT, fire: input.fire };
     case 'retreat':
-      // Still on the rope after a drop: swing, reel and let go as before.
-      if (state.rope) return { ...input, weapon: 0 };
       return { ...EMPTY_INPUT, left: input.left, right: input.right, jump: input.jump };
     default:
       return EMPTY_INPUT;
@@ -632,18 +620,10 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
   const s = activeSnail(state);
   if (!s || !s.alive) return;
 
-  // Nothing to do but watch while the hook flies.
-  if (state.hook) return;
   const team = state.teams[state.activeTeam];
-  // On the rope, up and down reel it in and out instead of aiming.
-  if (!state.rope) {
-    if (input.up) s.aim = clampAim(team.weapon, s.aim + 1);
-    if (input.down) s.aim = clampAim(team.weapon, s.aim - 1);
-  }
-  if (state.phase === 'retreat') {
-    if (state.rope) ropeInput(state, s, input);
-    else move(state, s, input);
-  }
+  if (input.up) s.aim = clampAim(team.weapon, s.aim + 1);
+  if (input.down) s.aim = clampAim(team.weapon, s.aim - 1);
+  if (state.phase === 'retreat') move(state, s, input);
   if (state.phase !== 'aiming') return;
 
   if (input.weapon > 0 && input.weapon <= WEAPONS.length && state.shotsFired === 0 && !state.charging) {
@@ -651,18 +631,7 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
     s.aim = clampAim(team.weapon, s.aim);
   }
   const w = team.weapon;
-  if (state.rope) {
-    // Enter on the rope drops a mine or dynamite (and the snail keeps swinging); else lets go.
-    if ((w === 'mine' || w === 'dynamite') && input.jump && !state.prevInput.jump) useWeapon(state, s, w, events);
-    else ropeInput(state, s, input);
-    return;
-  }
-  if (w === 'rope') {
-    if (input.fire && !state.prevInput.fire) {
-      fireRope(state, s);
-      return;
-    }
-  } else if (isCharged(w)) {
+  if (isCharged(w)) {
     if (input.fire) {
       state.charging = true;
       state.power = Math.min(1, Math.round(state.power * POWER_TICKS + 1) / POWER_TICKS);
@@ -818,8 +787,6 @@ function isMoving(state: GameState): boolean {
 function beginSettling(state: GameState): void {
   state.phase = 'settling';
   state.dig = null;
-  state.rope = null;
-  state.hook = null;
   state.settleTicks = 0;
   state.charging = false;
   state.power = 0;
@@ -837,7 +804,6 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
   switch (state.phase) {
     case 'aiming': {
       handleActiveInput(state, input, events);
-      if (state.hook) advanceHook(state, events);
       if (state.phase === 'aiming' && --state.turnTicksLeft <= 0) beginSettling(state);
       break;
     }
@@ -878,11 +844,7 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
   }
 
   updateObjects(state, events);
-  for (const s of state.snails) {
-    if (!s.alive) continue;
-    if (state.rope && s.id === state.activeSnailId) ropePhysics(state, s, events);
-    else updateSnailPhysics(state, s, events);
-  }
+  for (const s of state.snails) if (s.alive) updateSnailPhysics(state, s, events);
   // Physics would drop the snail inside its own hole; the tool holds it in place.
   const digger = activeSnail(state);
   if (state.dig && !state.dig.falling && digger?.alive) pinToDig(state, digger);
@@ -894,210 +856,6 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
 
   state.prevInput = { ...input };
   return events;
-}
-
-/** How far the rope reaches when fired. */
-export const ROPE_MAX = 260;
-const ROPE_MIN = 12;
-/** Reel speed (px/tick) for up/down. */
-const ROPE_REEL = 1.6;
-/** Push along the swing (px/tick^2) for left/right. */
-const ROPE_PUMP = 0.07;
-const ROPE_MAX_SPEED = 7.5;
-/** A swinging snail moving faster than this knocks others away. */
-const KNOCK_SPEED = 1.5;
-
-/** Hook flight speed, px/tick: the full reach takes about half a second. */
-const HOOK_SPEED = 8;
-
-/** Throws the hook along the aim; it flies for a moment before it sticks or falls short. */
-function fireRope(state: GameState, s: Snail): void {
-  const [dx, dy] = aimVector(s);
-  state.hook = { x: s.x, y: s.y, dx, dy, dist: 0 };
-  state.jumpTicks = 0;
-}
-
-/** One tick of hook flight: it sticks to the first ground it meets, or misses at full reach. */
-function advanceHook(state: GameState, events: SimEvent[]): void {
-  const h = state.hook!;
-  const s = activeSnail(state);
-  if (!s || !s.alive) {
-    state.hook = null;
-    return;
-  }
-  for (let k = 0; k < HOOK_SPEED; k += 2) {
-    const nx = h.x + h.dx * 2;
-    const ny = h.y + h.dy * 2;
-    if (h.dist >= SNAIL_R && isSolid(state.terrain, nx, ny)) {
-      state.hook = null;
-      events.push({ type: 'rope', x0: s.x, y0: s.y, x1: h.x, y1: h.y, hit: true });
-      const len = Math.sqrt((h.x - s.x) ** 2 + (h.y - s.y) ** 2);
-      state.rope = { pivots: [{ x: h.x, y: h.y, side: 0 }], len: Math.min(ROPE_MAX, Math.max(ROPE_MIN, len)) };
-      s.grounded = false;
-      return;
-    }
-    h.x = nx;
-    h.y = ny;
-    h.dist += 2;
-    if (h.dist >= ROPE_MAX) {
-      state.hook = null;
-      events.push({ type: 'rope', x0: s.x, y0: s.y, x1: h.x, y1: h.y, hit: false });
-      return;
-    }
-  }
-}
-
-function ropeInput(state: GameState, s: Snail, input: InputFrame): void {
-  const r = state.rope!;
-  // Fire or jump lets go, keeping the swing's speed. Fire again (in the air too) for a new rope.
-  // (With a mine or dynamite picked, Enter drops it instead; see handleActiveInput.)
-  if ((input.fire && !state.prevInput.fire) || (input.jump && !state.prevInput.jump)) {
-    state.rope = null;
-    return;
-  }
-  if (input.up) r.len = Math.max(ROPE_MIN, r.len - ROPE_REEL);
-  if (input.down) r.len = Math.min(ROPE_MAX, r.len + ROPE_REEL);
-  const p = r.pivots[r.pivots.length - 1];
-  const dx = s.x - p.x;
-  const dy = s.y - p.y;
-  const d = Math.sqrt(dx * dx + dy * dy);
-  if (d < 0.001) return;
-  // Tangent of the swing, pointing right-ish.
-  let tx = -dy / d;
-  let ty = dx / d;
-  if (tx < 0) {
-    tx = -tx;
-    ty = -ty;
-  }
-  const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-  if (dir !== 0) {
-    s.vx += tx * ROPE_PUMP * dir;
-    s.vy += ty * ROPE_PUMP * dir;
-    s.facing = dir > 0 ? 1 : -1;
-  }
-}
-
-const lastPivot = (r: Rope) => r.pivots[r.pivots.length - 1];
-const cross = (ax: number, ay: number, bx: number, by: number) => ax * by - ay * bx;
-
-/** Swinging: gravity, the rope holding the snail at most `len` from its pivot, terrain bumps. */
-function ropePhysics(state: GameState, s: Snail, events: SimEvent[]): void {
-  const r = state.rope!;
-  const t = state.terrain;
-  const px = s.x;
-  const py = s.y;
-  s.grounded = false;
-  s.vy += GRAVITY;
-  s.vx *= 0.998;
-  s.vy *= 0.998;
-  const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
-  if (speed > ROPE_MAX_SPEED) {
-    s.vx *= ROPE_MAX_SPEED / speed;
-    s.vy *= ROPE_MAX_SPEED / speed;
-  }
-  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(s.vx), Math.abs(s.vy))));
-  for (let i = 0; i < steps; i++) {
-    let nx = s.x + s.vx / steps;
-    let ny = s.y + s.vy / steps;
-    const p = lastPivot(r);
-    const dx = nx - p.x;
-    const dy = ny - p.y;
-    const d = Math.sqrt(dx * dx + dy * dy);
-    if (d > r.len) {
-      nx = p.x + (dx / d) * r.len;
-      ny = p.y + (dy / d) * r.len;
-    }
-    if (!snailHitsTerrain(t, nx, ny)) {
-      s.x = nx;
-      s.y = ny;
-      continue;
-    }
-    // Bumped into terrain: slide along it if one axis is free, else bounce a little.
-    if (!snailHitsTerrain(t, nx, s.y)) {
-      s.x = nx;
-      s.vy = Math.abs(s.vy) < 1 ? 0 : -s.vy * 0.3;
-      s.vx *= 0.9;
-    } else if (!snailHitsTerrain(t, s.x, ny)) {
-      s.y = ny;
-      s.vx = Math.abs(s.vx) < 1 ? 0 : -s.vx * 0.3;
-    } else {
-      s.vx *= -0.3;
-      s.vy *= -0.3;
-    }
-    break;
-  }
-  // A taut rope stops the snail moving away from the pivot.
-  const p = lastPivot(r);
-  const dx = s.x - p.x;
-  const dy = s.y - p.y;
-  const d = Math.sqrt(dx * dx + dy * dy);
-  if (d > 0.001 && d >= r.len - 0.5) {
-    const out = (s.vx * dx + s.vy * dy) / d;
-    if (out > 0) {
-      s.vx -= (out * dx) / d;
-      s.vy -= (out * dy) / d;
-    }
-  }
-  for (let k = 0; k < 3 && wrapRope(state, s, px, py); k++);
-  knockSnails(state, s, events);
-  if (s.y > WATER_Y + SNAIL_R) {
-    s.alive = false;
-    s.hp = 0;
-    state.rope = null;
-    events.push({ type: 'drown', snailId: s.id }, { type: 'splash', x: s.x });
-  }
-}
-
-/**
- * Bends the rope around a corner it swung into, or straightens it again once the snail swings
- * back. (px, py) is where the snail was before this tick. Returns true if it changed anything.
- */
-function wrapRope(state: GameState, s: Snail, px: number, py: number): boolean {
-  const r = state.rope!;
-  const p = lastPivot(r);
-  if (r.pivots.length > 1) {
-    const q = r.pivots[r.pivots.length - 2];
-    const c = cross(p.x - q.x, p.y - q.y, s.x - q.x, s.y - q.y);
-    if (Math.sign(c) === p.side) {
-      r.len += Math.sqrt((p.x - q.x) ** 2 + (p.y - q.y) ** 2);
-      r.pivots.pop();
-      return true;
-    }
-  }
-  const dx = s.x - p.x;
-  const dy = s.y - p.y;
-  const d = Math.sqrt(dx * dx + dy * dy);
-  for (let k = 3; k < d - SNAIL_R; k += 2) {
-    if (!isSolid(state.terrain, p.x + (dx / d) * k, p.y + (dy / d) * k)) continue;
-    const back = k - 2;
-    const cx = p.x + (dx / d) * back;
-    const cy = p.y + (dy / d) * back;
-    const side = Math.sign(cross(cx - p.x, cy - p.y, px - p.x, py - p.y));
-    if (side === 0 || back < 2) return false;
-    r.pivots.push({ x: cx, y: cy, side });
-    r.len = Math.max(ROPE_MIN / 2, r.len - back);
-    return true;
-  }
-  return false;
-}
-
-/** A fast swing into another snail sends it flying; the swinger loses some speed. */
-function knockSnails(state: GameState, s: Snail, events: SimEvent[]): void {
-  const reach = SNAIL_R * 2 + 2;
-  for (const o of state.snails) {
-    if (!o.alive || o === s) continue;
-    const dx = o.x - s.x;
-    const dy = o.y - s.y;
-    if (dx * dx + dy * dy >= reach * reach) continue;
-    const closing = (s.vx - o.vx) * dx + (s.vy - o.vy) * dy;
-    if (closing <= 0 || Math.sqrt(s.vx * s.vx + s.vy * s.vy) < KNOCK_SPEED) continue;
-    o.vx += s.vx * 0.9;
-    o.vy += s.vy * 0.9 - 1.2;
-    o.grounded = false;
-    s.vx *= 0.5;
-    s.vy *= 0.5;
-    events.push({ type: 'knock', x: (s.x + o.x) / 2, y: (s.y + o.y) / 2 });
-  }
 }
 
 /** FNV-1a hash over the full simulation state; compare across peers to detect desyncs. */
@@ -1138,19 +896,6 @@ export function hashState(state: GameState): number {
   mix(state.burstTicks);
   mix(state.retreatTicks);
   mix(state.jumpTicks);
-  if (state.hook) {
-    mixF(state.hook.x);
-    mixF(state.hook.y);
-    mixF(state.hook.dist);
-  }
-  if (state.rope) {
-    mixF(state.rope.len);
-    for (const p of state.rope.pivots) {
-      mixF(p.x);
-      mixF(p.y);
-      mix(p.side);
-    }
-  }
   if (state.dig) {
     mixF(state.dig.x);
     mixF(state.dig.y);

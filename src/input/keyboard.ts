@@ -16,7 +16,7 @@ const BINDINGS: Record<string, Held> = {
   Space: 'fire',
 };
 
-const WEAPON_KEYS: Record<string, number> = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`Digit${n}`, n]));
+const WEAPON_KEYS: Record<string, number> = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [`Digit${n}`, n]));
 
 /**
  * Tracks held keys and samples them into an InputFrame once per simulation tick. On-screen
