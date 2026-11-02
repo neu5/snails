@@ -373,7 +373,7 @@ export class Renderer {
     ctx.restore();
 
     // Label.
-    ctx.font = 'bold 12px system-ui, sans-serif';
+    ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
     ctx.textAlign = 'center';
     const label = `${s.name} ${Math.max(0, s.hp)}`;
     ctx.lineWidth = 3;
@@ -435,7 +435,7 @@ export class Renderer {
         break;
     }
     if (o.fuse > 0 && o.kind !== 'mine') {
-      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
       ctx.textAlign = 'center';
       ctx.lineWidth = 3;
       ctx.strokeStyle = '#000';
@@ -737,7 +737,7 @@ export class Renderer {
     this.particles = next;
 
     const texts: FloatText[] = [];
-    ctx.font = 'bold 16px system-ui, sans-serif';
+    ctx.font = 'bold 16px Verdana, Arial, Helvetica, sans-serif';
     ctx.textAlign = 'center';
     for (const f of this.texts) {
       f.life++;
@@ -805,7 +805,7 @@ export class Renderer {
       drawWeaponIcon(ctx, id, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
       ctx.globalAlpha = 1;
       if (!this.touch) {
-        ctx.font = `bold ${Math.round(10 * k)}px system-ui, sans-serif`;
+        ctx.font = `bold ${Math.round(10 * k)}px Verdana, Arial, Helvetica, sans-serif`;
         ctx.textAlign = 'left';
         ctx.fillStyle = '#fffa';
         ctx.fillText(String(i + 1), t.x + 4 * k, t.y + 11 * k);
@@ -820,7 +820,7 @@ export class Renderer {
       ctx.fillStyle = '#000a';
       roundRect(ctx, 0, 0, 74, 52, 10);
       ctx.fill();
-      ctx.font = 'bold 30px system-ui, sans-serif';
+      ctx.font = 'bold 30px Verdana, Arial, Helvetica, sans-serif';
       ctx.textAlign = 'center';
       if (state.phase === 'retreat') {
         ctx.fillStyle = '#ffd166';
@@ -830,7 +830,7 @@ export class Renderer {
         ctx.fillText(state.phase === 'aiming' ? String(secs) : '--', 37, 37);
       }
 
-      ctx.font = '12px system-ui, sans-serif';
+      ctx.font = '12px Verdana, Arial, Helvetica, sans-serif';
       ctx.fillStyle = '#ffffffaa';
       ctx.textAlign = 'left';
       if (!this.touch) {
@@ -845,7 +845,7 @@ export class Renderer {
       ctx.fillStyle = '#000a';
       roundRect(ctx, -w, 0, w, WIND_H, 10);
       ctx.fill();
-      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
       ctx.textAlign = 'left';
       ctx.fillStyle = '#ddd';
       ctx.fillText('WIND', -w + 10, 25);
@@ -876,7 +876,7 @@ export class Renderer {
         ctx.fillStyle = TEAM_COLORS[i];
         roundRect(ctx, -158, y + 2, 316 * Math.min(1, hp / maxTotal), 14, 5);
         ctx.fill();
-        ctx.font = 'bold 12px system-ui, sans-serif';
+        ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'right';
         ctx.fillText(t.name, -168, y + 13);
@@ -890,7 +890,7 @@ export class Renderer {
         if (b.life > 120) this.banner = null;
         else {
           ctx.globalAlpha = Math.min(1, (120 - b.life) / 30);
-          ctx.font = 'bold 26px system-ui, sans-serif';
+          ctx.font = 'bold 26px Verdana, Arial, Helvetica, sans-serif';
           ctx.textAlign = 'center';
           ctx.lineWidth = 6;
           ctx.strokeStyle = '#000';
@@ -902,7 +902,7 @@ export class Renderer {
       }
 
       if (this.status) {
-        ctx.font = 'bold 16px system-ui, sans-serif';
+        ctx.font = 'bold 16px Verdana, Arial, Helvetica, sans-serif';
         const w = ctx.measureText(this.status.text).width + 32;
         ctx.fillStyle = '#000b';
         roundRect(ctx, -w / 2, 150, w, 30, 15);
@@ -918,11 +918,11 @@ export class Renderer {
       ctx.fillRect(0, 0, MAP_W, MAP_H);
       this.anchored(ctx, MAP_W / 2, MAP_H / 2, () => {
         ctx.textAlign = 'center';
-        ctx.font = 'bold 56px system-ui, sans-serif';
+        ctx.font = 'bold 56px Verdana, Arial, Helvetica, sans-serif';
         const won = state.winner !== null && state.winner >= 0;
         ctx.fillStyle = won ? TEAM_COLORS[state.winner!] : '#fff';
         ctx.fillText(won ? `${state.teams[state.winner!].name} win!` : 'Draw!', 0, -10);
-        ctx.font = '20px system-ui, sans-serif';
+        ctx.font = '20px Verdana, Arial, Helvetica, sans-serif';
         ctx.fillStyle = '#ddd';
         ctx.fillText(this.touch ? 'Tap ⟳ for a new map' : 'Press R for a new map', 0, 34);
       });
