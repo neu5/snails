@@ -6,7 +6,7 @@ const WIND_H = 40;
 const TILE = 40;
 const TILE_GAP = 4;
 /** Weapon icons sit in a grid this many wide, under the wind box of the same width. */
-const BAR_COLS = 4;
+const BAR_COLS = 5;
 const BAR_W = BAR_COLS * (TILE + TILE_GAP) - TILE_GAP;
 
 export const TEAM_COLORS = ['#ff8a3d', '#5ec8ff'];
@@ -36,7 +36,12 @@ interface Tracer {
   x1: number;
   y1: number;
   life: number;
+  /** r, g, b; bullets are pale yellow. */
+  rgb?: string;
+  max?: number;
 }
+
+const ROPE_COLOR = '#c8a165';
 
 interface FloatText {
   x: number;
@@ -135,6 +140,16 @@ export class Renderer {
               size: 2 + Math.random() * 2,
             });
           }
+          break;
+        case 'rope':
+          // A miss shows the rope flying out and falling short; a hit kicks up a little dust.
+          if (!e.hit) this.tracers.push({ x0: e.x0, y0: e.y0, x1: e.x1, y1: e.y1, life: 0, rgb: '200, 161, 101', max: 14 });
+          else for (let i = 0; i < 5; i++) this.puff(e.x1, e.y1, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, 15, '#8a5f3c', 2);
+          break;
+        case 'knock':
+          this.texts.push({ x: e.x, y: e.y - 14, text: 'bonk!', color: '#ffe17a', life: 0 });
+          this.shake = Math.max(this.shake, 4);
+          for (let i = 0; i < 8; i++) this.puff(e.x, e.y, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, 12, '#fff', 2);
           break;
         case 'bullet':
           this.tracers.push({ x0: e.x0, y0: e.y0, x1: e.x1, y1: e.y1, life: 0 });
@@ -237,6 +252,7 @@ export class Renderer {
     this.drawBackdrop(ctx);
     ctx.drawImage(this.terrainCanvas, 0, 0);
 
+    this.drawRope(ctx, state);
     for (const s of state.snails) this.drawSnail(ctx, state, s);
     for (const o of state.objects) this.drawObject(ctx, o);
     this.drawDigTool(ctx, state);
@@ -435,8 +451,9 @@ export class Renderer {
     ctx.lineWidth = 1.5;
     for (const t of this.tracers) {
       t.life++;
-      if (t.life > 8) continue;
-      ctx.strokeStyle = `rgba(255, 236, 160, ${1 - t.life / 8})`;
+      const max = t.max ?? 8;
+      if (t.life > max) continue;
+      ctx.strokeStyle = `rgba(${t.rgb ?? '255, 236, 160'}, ${1 - t.life / max})`;
       ctx.beginPath();
       ctx.moveTo(t.x0, t.y0);
       ctx.lineTo(t.x1, t.y1);
@@ -467,8 +484,53 @@ export class Renderer {
     }
   }
 
+  /** The rope from the snail back through every wrapped corner to the hook. */
+  private drawRope(ctx: CanvasRenderingContext2D, state: GameState): void {
+    const r = state.rope;
+    const s = activeSnail(state);
+    if (!s) return;
+    const h = state.hook;
+    if (h) {
+      // Hook on its way out, trailing rope.
+      ctx.strokeStyle = ROPE_COLOR;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y - 4);
+      ctx.lineTo(h.x, h.y);
+      ctx.stroke();
+      ctx.save();
+      ctx.translate(h.x, h.y);
+      ctx.rotate(Math.atan2(h.dy, h.dx));
+      ctx.strokeStyle = '#c4cad4';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-4, 0);
+      ctx.lineTo(3, 0);
+      ctx.moveTo(3, 0);
+      ctx.quadraticCurveTo(0, -5, -3, -5);
+      ctx.moveTo(3, 0);
+      ctx.quadraticCurveTo(0, 5, -3, 5);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (!r) return;
+    ctx.strokeStyle = ROPE_COLOR;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y - 4);
+    for (let i = r.pivots.length - 1; i >= 0; i--) ctx.lineTo(r.pivots[i].x, r.pivots[i].y);
+    ctx.stroke();
+    // Hook dug into the ground.
+    const a = r.pivots[0];
+    ctx.fillStyle = '#9aa0aa';
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   private drawAim(ctx: CanvasRenderingContext2D, state: GameState): void {
     if (state.phase !== 'aiming' && state.phase !== 'firing') return;
+    if (state.rope || state.hook) return;
     const s = activeSnail(state);
     if (!s || !s.alive) return;
     const weapon = state.teams[state.activeTeam].weapon;
@@ -499,6 +561,15 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(12, 0, 4, 0, Math.PI * 2);
       ctx.fill();
+    } else if (weapon === 'rope') {
+      // Coiled rope with the hook ready to throw.
+      ctx.strokeStyle = ROPE_COLOR;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(8, 0, 4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#9aa0aa';
+      ctx.fillRect(12, -1.5, 6, 3);
     } else if (weapon === 'torch') {
       ctx.fillStyle = '#c94f2c';
       ctx.fillRect(2, -3, 10, 6);
@@ -763,7 +834,7 @@ export class Renderer {
       ctx.fillStyle = '#ffffffaa';
       ctx.textAlign = 'left';
       if (!this.touch) {
-        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   1-8 weapon   Space fire   P replay last move   R new map', 88, 20);
+        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   1-9 weapon   Space fire   P replay last move   R new map', 88, 20);
       }
       ctx.fillText(`Turn ${state.turnNumber}`, 88, 40);
     });
@@ -964,6 +1035,26 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.moveTo(6, -3);
       ctx.quadraticCurveTo(12, -1, 6, 1);
       ctx.fill();
+      break;
+    case 'rope':
+      // Coil of rope with a grappling hook.
+      ctx.strokeStyle = '#c8a165';
+      ctx.lineWidth = 2.5;
+      for (const r of [9, 6, 3]) {
+        ctx.beginPath();
+        ctx.arc(-3, 3, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = '#c4cad4';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(6, -6);
+      ctx.lineTo(12, -12);
+      ctx.moveTo(12, -12);
+      ctx.quadraticCurveTo(16, -8, 14, -4);
+      ctx.moveTo(12, -12);
+      ctx.quadraticCurveTo(8, -16, 4, -14);
+      ctx.stroke();
       break;
     case 'dynamite':
       ctx.rotate(0.25);
