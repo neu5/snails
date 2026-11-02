@@ -2,12 +2,15 @@ import { Rng, clamp, dcos, degToRad, dsin } from './math';
 import { carveCircle, generateTerrain, isSolid, type Terrain } from './terrain';
 import {
   EMPTY_INPUT,
+  WEAPONS,
   type GameConfig,
   type GameState,
   type InputFrame,
+  type ObjectKind,
   type Projectile,
   type SimEvent,
   type Snail,
+  type WeaponId,
 } from './types';
 
 export const TICK_RATE = 60;
@@ -19,7 +22,12 @@ export const SNAIL_R = 8;
 const WALK_SPEED = 0.7;
 const MAX_CLIMB = 4;
 const JUMP_VX = 1.7;
-const JUMP_VY = -3.3;
+const JUMP_VY = -2;
+/** Enter twice quickly: a higher jump backwards. */
+const BACK_JUMP_VX = 0.9;
+const BACK_JUMP_VY = -2.6;
+/** Ticks (150 ms) a jump waits for a second Enter before going off forward. */
+export const JUMP_WAIT = 9;
 const GRAVITY = 0.12;
 const SAFE_FALL_SPEED = 5.2;
 const FALL_DAMAGE_PER_SPEED = 7;
@@ -31,10 +39,56 @@ export const MAX_LAUNCH_SPEED = 11;
 export const PROJECTILE_GRAVITY = 0.12;
 const MAX_WIND = 0.035;
 
-const BLAST_TERRAIN_R = 34;
-const BLAST_DAMAGE_R = 58;
-const BLAST_MAX_DAMAGE = 50;
-const BLAST_KNOCKBACK = 6.5;
+interface Blast {
+  terrainR: number;
+  damageR: number;
+  damage: number;
+  knockback: number;
+}
+const OBJECT_KINDS: ObjectKind[] = ['shell', 'grenade', 'mine', 'dynamite'];
+export const BLASTS: Record<ObjectKind, Blast> = {
+  shell: { terrainR: 34, damageR: 58, damage: 50, knockback: 6.5 },
+  grenade: { terrainR: 30, damageR: 55, damage: 45, knockback: 6 },
+  mine: { terrainR: 30, damageR: 60, damage: 45, knockback: 7 },
+  dynamite: { terrainR: 62, damageR: 100, damage: 75, knockback: 9 },
+};
+
+interface Bullet {
+  damage: number;
+  carve: number;
+  knockback: number;
+}
+const GUN: Bullet = { damage: 25, carve: 8, knockback: 3.5 };
+const UZI: Bullet = { damage: 5, carve: 4, knockback: 1.2 };
+export const GUN_SHOTS = 2;
+const UZI_BURST_TICKS = 30;
+const UZI_EVERY = 3;
+const UZI_SPREAD = 4;
+const BULLET_RANGE = 1400;
+
+export const RETREAT_TICKS = 3 * TICK_RATE;
+export const GRENADE_FUSE = 3 * TICK_RATE;
+export const DYNAMITE_FUSE = 5 * TICK_RATE;
+export const MINE_ARM_TICKS = 2 * TICK_RATE;
+const MINE_TRIGGER_R = 28;
+
+/**
+ * Drill goes straight down; blowtorch cuts a tunnel along the aim. Both carry the snail and
+ * hurt any other snail in the way (`damage` per carve, never below 1 HP) while shoving it aside.
+ */
+export const DIG_TOOLS = {
+  drill: { speed: 0.7, ticks: 150, damage: 5 },
+  torch: { speed: 0.9, ticks: 180, damage: 5 },
+};
+const DIG_KNOCKBACK = 1.6;
+/** The blowtorch cuts at most this steep (degrees), never straight up or down. */
+export const TORCH_AIM = 60;
+const DIG_R = 11;
+/** Carving every few ticks (ahead of the snail) keeps terrain redraws cheap. */
+const DIG_EVERY = 6;
+const DIG_AHEAD = 6;
+const MINE_FUSE = 50;
+const BOUNCE = 0.45;
 
 const SETTLE_MIN_TICKS = 45;
 const SETTLE_MAX_TICKS = 600;
@@ -119,7 +173,7 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     rng: rng.state,
     terrain,
     snails,
-    teams: TEAM_NAMES.slice(0, teamCount).map((name, id) => ({ id, name, nextIndex: 0 })),
+    teams: TEAM_NAMES.slice(0, teamCount).map((name, id) => ({ id, name, nextIndex: 0, weapon: 'bazooka' as WeaponId })),
     activeTeam: 0,
     activeSnailId: 0,
     turnNumber: 0,
@@ -127,7 +181,12 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     turnTicksLeft: 0,
     power: 0,
     charging: false,
-    projectile: null,
+    shotsFired: 0,
+    burstTicks: 0,
+    retreatTicks: 0,
+    jumpTicks: 0,
+    objects: [],
+    dig: null,
     wind: 0,
     settleTicks: 0,
     winner: null,
@@ -171,7 +230,13 @@ function startTurn(state: GameState, team: number, events: SimEvent[]): void {
   state.turnTicksLeft = state.config.turnSeconds * TICK_RATE;
   state.power = 0;
   state.charging = false;
-  state.projectile = null;
+  state.shotsFired = 0;
+  state.burstTicks = 0;
+  state.retreatTicks = 0;
+  state.jumpTicks = 0;
+  state.dig = null;
+  // Only mines outlive a turn; anything else still around timed out while settling.
+  state.objects = state.objects.filter((o) => o.kind === 'mine');
   state.settleTicks = 0;
   state.wind = Math.round((random(state) * 2 - 1) * MAX_WIND * 10000) / 10000;
   events.push({ type: 'turn', team, snailId: pick.id });
@@ -189,7 +254,6 @@ function finishTurn(state: GameState, events: SimEvent[]): void {
   if (aliveTeams.length <= 1) {
     state.phase = 'gameover';
     state.winner = aliveTeams.length === 1 ? aliveTeams[0].id : -1;
-    state.projectile = null;
     events.push({ type: 'gameover', winner: state.winner });
     return;
   }
@@ -204,16 +268,35 @@ export function aimVector(s: Snail): [number, number] {
   return [s.facing * dcos(a), -dsin(a)];
 }
 
-export function launchProjectile(s: Snail, power: number): Projectile {
+export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grenade' = 'shell'): Projectile {
   const [dx, dy] = aimVector(s);
   const speed = MAX_LAUNCH_SPEED * Math.max(power, 0.05);
   return {
+    kind,
     x: s.x + dx * (SNAIL_R + 6),
     y: s.y + dy * (SNAIL_R + 6),
     vx: dx * speed,
     vy: dy * speed,
     age: 0,
     ownerId: s.id,
+    fuse: kind === 'grenade' ? GRENADE_FUSE : -1,
+    resting: false,
+  };
+}
+
+/** Mines and dynamite are dropped just in front of the snail. */
+function dropObject(state: GameState, s: Snail, kind: 'mine' | 'dynamite'): Projectile {
+  const front = s.x + s.facing * (SNAIL_R + 2);
+  return {
+    kind,
+    x: isSolid(state.terrain, front, s.y) ? s.x : front,
+    y: s.y,
+    vx: s.facing * 0.6,
+    vy: -1.2,
+    age: 0,
+    ownerId: s.id,
+    fuse: kind === 'dynamite' ? DYNAMITE_FUSE : -1,
+    resting: false,
   };
 }
 
@@ -247,27 +330,160 @@ export function advanceProjectile(
   return null;
 }
 
-function explode(state: GameState, x: number, y: number, events: SimEvent[]): void {
-  carveCircle(state.terrain, x, y, BLAST_TERRAIN_R);
-  events.push({ type: 'explosion', x, y, r: BLAST_TERRAIN_R });
+/** Moves a grenade, mine or dynamite one tick: gravity, no wind, bounces off terrain. */
+function advanceBouncer(o: Projectile, t: Terrain): void {
+  if (o.resting) {
+    if (isSolid(t, o.x, o.y + 1)) return;
+    o.resting = false;
+  }
+  for (let i = 0; i < 12 && isSolid(t, o.x, o.y); i++) o.y -= 1;
+  o.vy += PROJECTILE_GRAVITY;
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(o.vx), Math.abs(o.vy))));
+  for (let i = 0; i < steps; i++) {
+    const nx = o.x + o.vx / steps;
+    if (isSolid(t, nx, o.y)) {
+      o.vx = -o.vx * BOUNCE;
+      break;
+    }
+    o.x = nx;
+    const ny = o.y + o.vy / steps;
+    if (isSolid(t, o.x, ny)) {
+      if (Math.abs(o.vy) < 1 && Math.abs(o.vx) < 0.6) {
+        o.vx = 0;
+        o.vy = 0;
+        o.resting = true;
+      } else {
+        o.vy = -o.vy * BOUNCE;
+        o.vx *= 0.7;
+      }
+      break;
+    }
+    o.y = ny;
+  }
+}
+
+function removeObject(state: GameState, o: Projectile): void {
+  const i = state.objects.indexOf(o);
+  if (i >= 0) state.objects.splice(i, 1);
+}
+
+function updateObjects(state: GameState, events: SimEvent[]): void {
+  for (const o of [...state.objects]) {
+    // An earlier explosion this tick may have removed it.
+    if (!state.objects.includes(o)) continue;
+    if (o.kind === 'shell') {
+      const res = advanceProjectile(o, state.terrain, state.snails, state.wind);
+      if (!res) continue;
+      removeObject(state, o);
+      if (res.type === 'explode') explode(state, res.x, res.y, BLASTS.shell, events);
+      else if (res.y > WATER_Y) events.push({ type: 'splash', x: res.x });
+      continue;
+    }
+    o.age++;
+    advanceBouncer(o, state.terrain);
+    if (o.y > WATER_Y || o.x < -400 || o.x > state.terrain.w + 400) {
+      removeObject(state, o);
+      if (o.y > WATER_Y) events.push({ type: 'splash', x: o.x });
+      continue;
+    }
+    if (o.kind === 'mine' && o.fuse < 0 && o.age >= MINE_ARM_TICKS) {
+      const near = state.snails.some((s) => s.alive && (s.x - o.x) ** 2 + (s.y - o.y) ** 2 < MINE_TRIGGER_R * MINE_TRIGGER_R);
+      if (near) {
+        o.fuse = MINE_FUSE;
+        events.push({ type: 'mineTriggered', x: o.x, y: o.y });
+      }
+    }
+    if (o.fuse > 0 && --o.fuse === 0) {
+      removeObject(state, o);
+      explode(state, o.x, o.y, BLASTS[o.kind], events);
+    }
+  }
+}
+
+function explode(state: GameState, x: number, y: number, blast: Blast, events: SimEvent[]): void {
+  carveCircle(state.terrain, x, y, blast.terrainR);
+  events.push({ type: 'explosion', x, y, r: blast.terrainR });
   for (const s of state.snails) {
     if (!s.alive) continue;
     const dx = s.x - x;
     const dy = s.y - y;
     const d = Math.sqrt(dx * dx + dy * dy);
-    if (d >= BLAST_DAMAGE_R) continue;
-    const f = 1 - d / BLAST_DAMAGE_R;
-    const dmg = Math.round(BLAST_MAX_DAMAGE * f);
+    if (d >= blast.damageR) continue;
+    const f = 1 - d / blast.damageR;
+    const dmg = Math.round(blast.damage * f);
     if (dmg > 0) {
       s.hp -= dmg;
       events.push({ type: 'damage', snailId: s.id, amount: dmg });
     }
     const nx = d > 0.001 ? dx / d : 0;
     const ny = d > 0.001 ? dy / d : -1;
-    const k = BLAST_KNOCKBACK * f;
+    const k = blast.knockback * f;
     s.vx += nx * k;
     s.vy += ny * k - 1.8 * f;
     s.grounded = false;
+  }
+  // Toss nearby objects; mines caught in a blast go off shortly after.
+  for (const o of state.objects) {
+    if (o.kind === 'shell') continue;
+    const dx = o.x - x;
+    const dy = o.y - y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d >= blast.damageR) continue;
+    const f = 1 - d / blast.damageR;
+    o.vx += (d > 0.001 ? dx / d : 0) * blast.knockback * f;
+    o.vy += (d > 0.001 ? dy / d : -1) * blast.knockback * f - 1.5 * f;
+    o.resting = false;
+    if (o.kind === 'mine' && o.fuse < 0) o.fuse = 10;
+  }
+}
+
+export interface BulletHit {
+  x: number;
+  y: number;
+  snail: Snail | null;
+  terrain: boolean;
+}
+
+/** Follows a bullet in a straight line until terrain, a snail or the map edge. Pure; the bot uses it too. */
+export function traceBullet(
+  terrain: Terrain,
+  snails: readonly Snail[],
+  x: number,
+  y: number,
+  dx: number,
+  dy: number,
+  ownerId: number,
+): BulletHit {
+  for (let i = 0; i < BULLET_RANGE; i++) {
+    x += dx;
+    y += dy;
+    if (y > WATER_Y || y < -100 || x < -50 || x > terrain.w + 50) break;
+    if (isSolid(terrain, x, y)) return { x, y, snail: null, terrain: true };
+    for (const s of snails) {
+      if (!s.alive || s.id === ownerId) continue;
+      if ((s.x - x) ** 2 + (s.y - y) ** 2 < SNAIL_R * SNAIL_R) return { x, y, snail: s, terrain: false };
+    }
+  }
+  return { x, y, snail: null, terrain: false };
+}
+
+function shoot(state: GameState, s: Snail, spread: number, bullet: Bullet, events: SimEvent[]): void {
+  const a = degToRad(s.aim + spread);
+  const dx = s.facing * dcos(a);
+  const dy = -dsin(a);
+  const x0 = s.x + dx * (SNAIL_R + 4);
+  const y0 = s.y - 2 + dy * (SNAIL_R + 4);
+  const hit = traceBullet(state.terrain, state.snails, x0, y0, dx, dy, s.id);
+  events.push({ type: 'bullet', x0, y0, x1: hit.x, y1: hit.y, hit: hit.snail !== null || hit.terrain });
+  if (hit.snail) {
+    const t = hit.snail;
+    t.hp -= bullet.damage;
+    events.push({ type: 'damage', snailId: t.id, amount: bullet.damage });
+    t.vx += dx * bullet.knockback;
+    t.vy += dy * bullet.knockback - 1;
+    t.grounded = false;
+  } else if (hit.terrain) {
+    carveCircle(state.terrain, hit.x, hit.y, bullet.carve);
   }
 }
 
@@ -319,6 +535,8 @@ function updateSnailPhysics(state: GameState, s: Snail, events: SimEvent[]): voi
           const dmg = Math.round((impact - SAFE_FALL_SPEED) * FALL_DAMAGE_PER_SPEED);
           s.hp -= dmg;
           events.push({ type: 'damage', snailId: s.id, amount: dmg });
+          // A painful fall ends the active snail's move.
+          if (s.id === state.activeSnailId && isMoving(state)) beginSettling(state);
         }
         if (impact > 3 || Math.abs(s.vx) > 2.5) {
           s.vy = -impact * 0.25;
@@ -346,43 +564,232 @@ function updateSnailPhysics(state: GameState, s: Snail, events: SimEvent[]): voi
   }
 }
 
+/** Bazooka and grenade charge while fire is held; the rest go off on the press. */
+export function isCharged(w: WeaponId): boolean {
+  return w === 'bazooka' || w === 'grenade';
+}
+
+/** The part of the input the current phase listens to. Recorders store this, so logs stay small. */
+export function effectiveInput(state: GameState, input: InputFrame): InputFrame {
+  switch (state.phase) {
+    case 'aiming':
+      return input;
+    case 'firing':
+      return { ...EMPTY_INPUT, up: input.up, down: input.down };
+    case 'digging':
+      return { ...EMPTY_INPUT, fire: input.fire };
+    case 'retreat':
+      return { ...EMPTY_INPUT, left: input.left, right: input.right, jump: input.jump };
+    default:
+      return EMPTY_INPUT;
+  }
+}
+
+function move(state: GameState, s: Snail, input: InputFrame): void {
+  const press = input.jump && !state.prevInput.jump;
+  if (state.jumpTicks > 0) {
+    // Enter was pressed: wait a moment to see whether a second press makes it a back jump.
+    if (!s.grounded) state.jumpTicks = 0;
+    else if (press) jump(state, s, -BACK_JUMP_VX, BACK_JUMP_VY);
+    else if (--state.jumpTicks === 0) jump(state, s, JUMP_VX, JUMP_VY);
+    return;
+  }
+  if (!s.grounded) return;
+  if (press) {
+    state.jumpTicks = JUMP_WAIT;
+  } else if (input.left && !input.right) {
+    tryWalk(state, s, -1);
+  } else if (input.right && !input.left) {
+    tryWalk(state, s, 1);
+  }
+}
+
+/** vx is along the way the snail faces; negative jumps backwards. */
+function jump(state: GameState, s: Snail, vx: number, vy: number): void {
+  s.vx = s.facing * vx;
+  s.vy = vy;
+  s.grounded = false;
+  state.jumpTicks = 0;
+}
+
+function clampAim(w: WeaponId, aim: number): number {
+  return w === 'torch' ? clamp(aim, -TORCH_AIM, TORCH_AIM) : clamp(aim, AIM_MIN, AIM_MAX);
+}
+
 function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent[]): void {
   const s = activeSnail(state);
   if (!s || !s.alive) return;
-  const prev = state.prevInput;
 
-  if (input.up) s.aim = clamp(s.aim + 1, AIM_MIN, AIM_MAX);
-  if (input.down) s.aim = clamp(s.aim - 1, AIM_MIN, AIM_MAX);
+  const team = state.teams[state.activeTeam];
+  if (input.up) s.aim = clampAim(team.weapon, s.aim + 1);
+  if (input.down) s.aim = clampAim(team.weapon, s.aim - 1);
+  if (state.phase === 'retreat') move(state, s, input);
+  if (state.phase !== 'aiming') return;
 
-  if (input.fire) {
-    state.charging = true;
-    state.power = Math.min(1, Math.round(state.power * POWER_TICKS + 1) / POWER_TICKS);
-    if (state.power >= 1) fire(state, s, events);
+  if (input.weapon > 0 && input.weapon <= WEAPONS.length && state.shotsFired === 0 && !state.charging) {
+    team.weapon = WEAPONS[input.weapon - 1];
+    s.aim = clampAim(team.weapon, s.aim);
+  }
+  const w = team.weapon;
+  if (isCharged(w)) {
+    if (input.fire) {
+      state.charging = true;
+      state.power = Math.min(1, Math.round(state.power * POWER_TICKS + 1) / POWER_TICKS);
+      if (state.power >= 1) useWeapon(state, s, w, events);
+      return;
+    }
+    if (state.charging) {
+      useWeapon(state, s, w, events);
+      return;
+    }
+  } else if (input.fire && !state.prevInput.fire && (s.grounded || (w !== 'drill' && w !== 'torch'))) {
+    // Dig tools need ground to start from; no torching mid-jump.
+    useWeapon(state, s, w, events);
     return;
   }
-  if (state.charging) {
-    fire(state, s, events);
-    return;
-  }
+  // After the first gun shot the snail stays put but may re-aim.
+  if (state.shotsFired === 0) move(state, s, input);
+}
 
-  if (s.grounded) {
-    if (input.jump && !prev.jump) {
-      s.vx = s.facing * JUMP_VX;
-      s.vy = JUMP_VY;
-      s.grounded = false;
-    } else if (input.left && !input.right) {
-      tryWalk(state, s, -1);
-    } else if (input.right && !input.left) {
-      tryWalk(state, s, 1);
+function useWeapon(state: GameState, s: Snail, w: WeaponId, events: SimEvent[]): void {
+  events.push({ type: 'fire', snailId: s.id, weapon: w });
+  state.shotsFired++;
+  switch (w) {
+    case 'bazooka':
+    case 'grenade':
+      state.objects.push(launchProjectile(s, state.power, w === 'bazooka' ? 'shell' : 'grenade'));
+      startRetreat(state);
+      break;
+    case 'gun':
+      shoot(state, s, 0, GUN, events);
+      if (state.shotsFired >= GUN_SHOTS) startRetreat(state);
+      break;
+    case 'uzi':
+      state.phase = 'firing';
+      state.burstTicks = UZI_BURST_TICKS;
+      break;
+    case 'mine':
+    case 'dynamite':
+      state.objects.push(dropObject(state, s, w));
+      startRetreat(state);
+      break;
+    case 'drill':
+    case 'torch': {
+      const [dx, dy] = w === 'drill' ? [0, 1] : aimVector(s);
+      const { speed, ticks } = DIG_TOOLS[w];
+      state.dig = { x: s.x, y: s.y, dx: dx * speed, dy: dy * speed, ticksLeft: ticks, falling: false, hp: s.hp };
+      state.phase = 'digging';
+      break;
     }
   }
 }
 
-function fire(state: GameState, s: Snail, events: SimEvent[]): void {
-  state.projectile = launchProjectile(s, state.power);
+/** One tick of drilling or tunnelling. Returns false once the tool is done. */
+function advanceDig(state: GameState, s: Snail, events: SimEvent[]): boolean {
+  const d = state.dig!;
+  // Hurt by a fall, a mine or anything else: the snail drops the tool.
+  if (s.hp < d.hp) return false;
+  const len = Math.sqrt(d.dx * d.dx + d.dy * d.dy);
+  if (d.falling) {
+    // Physics moves the snail; the tool goes with it and keeps cutting.
+    d.x = s.x;
+    d.y = s.y;
+    if (s.grounded) d.falling = false;
+  }
+  if (d.ticksLeft % DIG_EVERY === 0) {
+    const cx = d.x + (d.dx / len) * DIG_AHEAD;
+    const cy = d.y + (d.dy / len) * DIG_AHEAD;
+    carveCircle(state.terrain, cx, cy, DIG_R);
+    events.push({ type: 'dig', x: cx, y: cy });
+    hurtInPath(state, s, cx, cy, d.dx / len, d.dy / len, events);
+  }
+  if (!d.falling) {
+    d.x += d.dx;
+    d.y += d.dy;
+    pinToDig(state, s);
+    // Out in open air (a gap, a cave, above the surface) there is nothing to hold on to:
+    // the snail falls, still cutting.
+    if (!hasGrip(state.terrain, d.x, d.y)) {
+      d.falling = true;
+      // A small push so it slides off the lip instead of perching on it.
+      s.vx = (d.dx / len) * 1.5;
+      s.grounded = false;
+    }
+  }
+  d.ticksLeft--;
+  // Past the water line the snail drowns, on purpose or not.
+  const out = d.x < SNAIL_R || d.x > state.terrain.w - SNAIL_R || d.y < SNAIL_R || d.y > WATER_Y + SNAIL_R;
+  return d.ticksLeft > 0 && !out;
+}
+
+/** Points just outside a snail in its own tunnel; a digging snail must touch terrain at one of them. */
+const DIG_GRIP = SNAIL_R + 5;
+const GRIP_OFFSETS: [number, number][] = (() => {
+  const out: [number, number][] = [];
+  for (let dy = -DIG_GRIP; dy <= DIG_GRIP; dy++) {
+    for (let dx = -DIG_GRIP; dx <= DIG_GRIP; dx++) {
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= DIG_GRIP * DIG_GRIP && d2 > (DIG_GRIP - 1) * (DIG_GRIP - 1)) out.push([dx, dy]);
+    }
+  }
+  return out;
+})();
+
+/** False once the snail has cut its way out into open air (no flying on a torch). */
+function hasGrip(t: Terrain, x: number, y: number): boolean {
+  for (const [dx, dy] of GRIP_OFFSETS) if (isSolid(t, x + dx, y + dy)) return true;
+  return false;
+}
+
+/** Other snails touching the tool get hurt and pushed out of its way. */
+function hurtInPath(state: GameState, digger: Snail, x: number, y: number, ux: number, uy: number, events: SimEvent[]): void {
+  const tool = state.teams[state.activeTeam].weapon === 'torch' ? DIG_TOOLS.torch : DIG_TOOLS.drill;
+  const reach = DIG_R + SNAIL_R + 2;
+  for (const t of state.snails) {
+    if (!t.alive || t === digger) continue;
+    const dx = t.x - x;
+    const dy = t.y - y;
+    if (dx * dx + dy * dy >= reach * reach) continue;
+    // Tools wound but never kill: they stop at 1 HP.
+    const dmg = Math.min(tool.damage, t.hp - 1);
+    if (dmg > 0) {
+      t.hp -= dmg;
+      events.push({ type: 'damage', snailId: t.id, amount: dmg });
+    }
+    // Sideways off the tool's line, plus a bit along it.
+    const side = dx * -uy + dy * ux >= 0 ? 1 : -1;
+    t.vx += (-uy * side + ux * 0.5) * DIG_KNOCKBACK;
+    t.vy += (ux * side + uy * 0.5) * DIG_KNOCKBACK - 1;
+    t.grounded = false;
+  }
+}
+
+function pinToDig(state: GameState, s: Snail): void {
+  const d = state.dig!;
+  s.x = d.x;
+  s.y = d.y;
+  s.vx = 0;
+  s.vy = 0;
+  s.grounded = true;
+}
+
+function startRetreat(state: GameState): void {
+  state.phase = 'retreat';
+  state.retreatTicks = RETREAT_TICKS;
   state.charging = false;
-  state.phase = 'flying';
-  events.push({ type: 'fire', snailId: s.id });
+  state.power = 0;
+}
+
+function isMoving(state: GameState): boolean {
+  return state.phase === 'aiming' || state.phase === 'firing' || state.phase === 'digging' || state.phase === 'retreat';
+}
+
+function beginSettling(state: GameState): void {
+  state.phase = 'settling';
+  state.dig = null;
+  state.settleTicks = 0;
+  state.charging = false;
+  state.power = 0;
 }
 
 /**
@@ -391,43 +798,43 @@ function fire(state: GameState, s: Snail, events: SimEvent[]): void {
  */
 export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
   const events: SimEvent[] = [];
-  const input = state.phase === 'aiming' ? rawInput : EMPTY_INPUT;
+  const input = effectiveInput(state, rawInput);
   state.tick++;
 
   switch (state.phase) {
     case 'aiming': {
       handleActiveInput(state, input, events);
-      if (state.phase === 'aiming') {
-        state.turnTicksLeft--;
-        if (state.turnTicksLeft <= 0) {
-          state.phase = 'settling';
-          state.settleTicks = 0;
-          state.charging = false;
-          state.power = 0;
-        }
+      if (state.phase === 'aiming' && --state.turnTicksLeft <= 0) beginSettling(state);
+      break;
+    }
+    case 'firing': {
+      handleActiveInput(state, input, events);
+      const s = activeSnail(state);
+      if (s && s.alive && state.burstTicks % UZI_EVERY === 0) {
+        shoot(state, s, (random(state) * 2 - 1) * UZI_SPREAD, UZI, events);
+      }
+      if (--state.burstTicks <= 0) startRetreat(state);
+      break;
+    }
+    case 'digging': {
+      const s = activeSnail(state);
+      // A second fire press stops the tool early.
+      const stop = input.fire && !state.prevInput.fire;
+      if (!s || !s.alive || stop || !advanceDig(state, s, events)) {
+        state.dig = null;
+        startRetreat(state);
       }
       break;
     }
-    case 'flying': {
-      const p = state.projectile;
-      if (p) {
-        const res = advanceProjectile(p, state.terrain, state.snails, state.wind);
-        if (res) {
-          if (res.type === 'explode') explode(state, res.x, res.y, events);
-          else if (res.y > WATER_Y) events.push({ type: 'splash', x: res.x });
-          state.projectile = null;
-          state.phase = 'settling';
-          state.settleTicks = 0;
-        }
-      } else {
-        state.phase = 'settling';
-      }
+    case 'retreat':
+      handleActiveInput(state, input, events);
+      if (--state.retreatTicks <= 0) beginSettling(state);
       break;
-    }
     case 'settling': {
       state.settleTicks++;
       const still = state.snails.every((s) => !s.alive || s.grounded);
-      if ((still && state.settleTicks >= SETTLE_MIN_TICKS) || state.settleTicks >= SETTLE_MAX_TICKS) {
+      const busy = state.objects.some((o) => o.kind === 'shell' || o.fuse > 0 || !o.resting);
+      if ((still && !busy && state.settleTicks >= SETTLE_MIN_TICKS) || state.settleTicks >= SETTLE_MAX_TICKS) {
         finishTurn(state, events);
       }
       break;
@@ -436,14 +843,15 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
       break;
   }
 
+  updateObjects(state, events);
   for (const s of state.snails) if (s.alive) updateSnailPhysics(state, s, events);
+  // Physics would drop the snail inside its own hole; the tool holds it in place.
+  const digger = activeSnail(state);
+  if (state.dig && !state.dig.falling && digger?.alive) pinToDig(state, digger);
 
-  if (state.phase === 'aiming') {
+  if (isMoving(state)) {
     const a = activeSnail(state);
-    if (!a || !a.alive) {
-      state.phase = 'settling';
-      state.settleTicks = 0;
-    }
+    if (!a || !a.alive) beginSettling(state);
   }
 
   state.prevInput = { ...input };
@@ -484,9 +892,25 @@ export function hashState(state: GameState): number {
     mix(s.aim);
     mix(s.alive ? 1 : 0);
   }
-  if (state.projectile) {
-    mixF(state.projectile.x);
-    mixF(state.projectile.y);
+  mix(state.shotsFired);
+  mix(state.burstTicks);
+  mix(state.retreatTicks);
+  mix(state.jumpTicks);
+  if (state.dig) {
+    mixF(state.dig.x);
+    mixF(state.dig.y);
+    mix(state.dig.ticksLeft);
+    mix(state.dig.falling ? 1 : 0);
+    mix(state.dig.hp);
+  }
+  for (const t of state.teams) mix(WEAPONS.indexOf(t.weapon));
+  for (const o of state.objects) {
+    mix(OBJECT_KINDS.indexOf(o.kind));
+    mixF(o.x);
+    mixF(o.y);
+    mixF(o.vx);
+    mixF(o.vy);
+    mix(o.fuse);
   }
   const d = state.terrain.data;
   for (let i = 0; i < d.length; i += 4) mix(d[i] | (d[i + 1] << 8) | (d[i + 2] << 16) | (d[i + 3] << 24));

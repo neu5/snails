@@ -1,4 +1,4 @@
-import { createGame, hashState, step } from './game';
+import { createGame, effectiveInput, hashState, step } from './game';
 import { EMPTY_INPUT, type GameConfig, type GameState, type InputFrame, type SimEvent } from './types';
 
 /**
@@ -32,10 +32,12 @@ export class DesyncError extends Error {
   }
 }
 
-const KEYS: (keyof InputFrame)[] = ['left', 'right', 'up', 'down', 'jump', 'fire'];
+const KEYS = ['left', 'right', 'up', 'down', 'jump', 'fire'] as const;
+/** Bits 0-5 are KEYS, bits 6-9 the weapon key. */
+const WEAPON_SHIFT = KEYS.length;
 
 export function packInput(input: InputFrame): number {
-  let bits = 0;
+  let bits = (input.weapon & 15) << WEAPON_SHIFT;
   KEYS.forEach((k, i) => {
     if (input[k]) bits |= 1 << i;
   });
@@ -43,7 +45,7 @@ export function packInput(input: InputFrame): number {
 }
 
 export function unpackInput(bits: number): InputFrame {
-  const out = { ...EMPTY_INPUT };
+  const out = { ...EMPTY_INPUT, weapon: (bits >> WEAPON_SHIFT) & 15 };
   KEYS.forEach((k, i) => {
     out[k] = (bits & (1 << i)) !== 0;
   });
@@ -92,8 +94,8 @@ export class TurnRecorder {
   step(input: InputFrame): { events: SimEvent[]; turn: TurnRecord | null } {
     const s = this.state;
     if (s.phase === 'gameover') return { events: step(s, EMPTY_INPUT), turn: null };
-    // Only aiming-phase input reaches the sim; storing the rest as empty keeps runs long.
-    const effective = s.phase === 'aiming' ? input : EMPTY_INPUT;
+    // Store only what the current phase listens to; it keeps runs long.
+    const effective = effectiveInput(s, input);
     pushRun(this.rle, packInput(effective));
     const events = step(s, effective);
     if (!endsTurn(events)) return { events, turn: null };

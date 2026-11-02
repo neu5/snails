@@ -49,7 +49,7 @@ describe('simulation', () => {
     s.aim = -60;
     const v = state.terrain.version;
     for (let i = 0; i < 20; i++) step(state, { ...EMPTY_INPUT, fire: true });
-    for (let i = 0; i < 300 && state.phase === 'flying'; i++) step(state, EMPTY_INPUT);
+    for (let i = 0; i < 300 && state.objects.length > 0; i++) step(state, EMPTY_INPUT);
     for (let i = 0; i < 2; i++) step(state, EMPTY_INPUT);
     expect(state.terrain.version).toBeGreaterThan(v);
   });

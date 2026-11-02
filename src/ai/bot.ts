@@ -1,16 +1,23 @@
-import { advanceProjectile, launchProjectile, activeSnail, POWER_TICKS, SNAIL_R } from '../sim/game';
-import { Rng } from '../sim/math';
-import { EMPTY_INPUT, type GameState, type InputFrame, type Snail } from '../sim/types';
+import { advanceProjectile, launchProjectile, activeSnail, traceBullet, POWER_TICKS, SNAIL_R } from '../sim/game';
+import { Rng, dcos, degToRad, dsin } from '../sim/math';
+import { EMPTY_INPUT, WEAPONS, type GameState, type InputFrame, type Snail } from '../sim/types';
+
+/** The bot uses the gun when it has a clear line to an enemy this close, the bazooka otherwise. */
+const GUN_RANGE = 350;
+const BAZOOKA_KEY = WEAPONS.indexOf('bazooka') + 1;
+const GUN_KEY = WEAPONS.indexOf('gun') + 1;
 
 type Stage =
   | { kind: 'walk'; dir: 1 | -1; ticks: number; jumpAt: number }
   | { kind: 'think' }
   | { kind: 'face'; dir: 1 | -1 }
-  | { kind: 'aim'; aim: number; powerTicks: number }
+  | { kind: 'aim'; shot: Shot }
   | { kind: 'charge'; powerTicks: number; held: number }
+  | { kind: 'shoot'; shots: number }
   | { kind: 'done' };
 
 interface Shot {
+  weapon: 'bazooka' | 'gun';
   facing: 1 | -1;
   aim: number;
   powerTicks: number;
@@ -69,7 +76,7 @@ export class Bot {
       case 'think': {
         if (!me.grounded) return out;
         const shot = this.plan(state, me);
-        this.stage = shot.facing !== me.facing ? { kind: 'face', dir: shot.facing } : { kind: 'aim', aim: shot.aim, powerTicks: shot.powerTicks };
+        this.stage = shot.facing !== me.facing ? { kind: 'face', dir: shot.facing } : { kind: 'aim', shot };
         if (shot.facing !== me.facing) this.pending = shot;
         return out;
       }
@@ -77,21 +84,32 @@ export class Bot {
         if (me.facing === st.dir) {
           const shot = this.pending!;
           // Re-plan: the turn step moved us slightly.
-          const re = this.plan(state, me, shot.facing);
-          this.stage = { kind: 'aim', aim: re.aim, powerTicks: re.powerTicks };
+          this.stage = { kind: 'aim', shot: this.plan(state, me, shot.facing) };
           return out;
         }
         if (st.dir < 0) out.left = true;
         else out.right = true;
         return out;
       }
-      case 'aim':
-        if (me.aim < st.aim) out.up = true;
-        else if (me.aim > st.aim) out.down = true;
+      case 'aim': {
+        const { shot } = st;
+        out.weapon = shot.weapon === 'gun' ? GUN_KEY : BAZOOKA_KEY;
+        if (me.aim < shot.aim) out.up = true;
+        else if (me.aim > shot.aim) out.down = true;
         else {
-          this.stage = { kind: 'charge', powerTicks: st.powerTicks, held: 0 };
+          this.stage = shot.weapon === 'gun' ? { kind: 'shoot', shots: 2 } : { kind: 'charge', powerTicks: shot.powerTicks, held: 0 };
           this.wait = 15;
         }
+        return out;
+      }
+      case 'shoot':
+        // Fire fires on the press, so release between shots.
+        if (st.shots > 0 && !state.prevInput.fire) {
+          out.fire = true;
+          st.shots--;
+          this.wait = 20;
+        }
+        if (st.shots === 0) this.stage = { kind: 'done' };
         return out;
       case 'charge':
         if (st.held < st.powerTicks) {
@@ -109,9 +127,34 @@ export class Bot {
   private pending: Shot | null = null;
 
   private plan(state: GameState, me: Snail, forceFacing?: 1 | -1): Shot {
+    return this.planGun(state, me, forceFacing) ?? this.planBazooka(state, me, forceFacing);
+  }
+
+  /** Finds an aim whose bullet hits the nearest enemy in range, if any. */
+  private planGun(state: GameState, me: Snail, forceFacing?: 1 | -1): Shot | null {
+    let best: Shot | null = null;
+    const facings: (1 | -1)[] = forceFacing ? [forceFacing] : [1, -1];
+    for (const facing of facings) {
+      for (let aim = -85; aim <= 85; aim++) {
+        const a = degToRad(aim);
+        const dx = facing * dcos(a);
+        const dy = -dsin(a);
+        const hit = traceBullet(state.terrain, state.snails, me.x + dx * (SNAIL_R + 4), me.y - 2 + dy * (SNAIL_R + 4), dx, dy, me.id);
+        if (!hit.snail || hit.snail.team === me.team) continue;
+        const d = dist(hit.snail.x - me.x, hit.snail.y - me.y);
+        if (d > GUN_RANGE) continue;
+        const score = -d + (facing === me.facing ? 5 : 0);
+        if (!best || score > best.score) best = { weapon: 'gun', facing, aim, powerTicks: 0, score };
+      }
+    }
+    if (best && this.rng.next() > this.accuracy) best.aim += this.rng.int(-3, 4);
+    return best;
+  }
+
+  private planBazooka(state: GameState, me: Snail, forceFacing?: 1 | -1): Shot {
     const enemies = state.snails.filter((s) => s.alive && s.team !== me.team);
     const friends = state.snails.filter((s) => s.alive && s.team === me.team);
-    let best: Shot = { facing: me.facing, aim: 45, powerTicks: 50, score: -Infinity };
+    let best: Shot = { weapon: 'bazooka', facing: me.facing, aim: 45, powerTicks: 50, score: -Infinity };
     const facings: (1 | -1)[] = forceFacing ? [forceFacing] : [1, -1];
     for (const facing of facings) {
       const probe: Snail = { ...me, facing };
@@ -133,7 +176,7 @@ export class Bot {
           for (const e of enemies) nearest = Math.min(nearest, dist(e.x - impact.x, e.y - impact.y));
           score -= nearest * 0.05;
           score += (facing === me.facing ? 0.5 : 0) + this.rng.next() * 0.01;
-          if (score > best.score) best = { facing, aim, powerTicks: pt, score };
+          if (score > best.score) best = { weapon: 'bazooka', facing, aim, powerTicks: pt, score };
         }
       }
     }
