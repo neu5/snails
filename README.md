@@ -26,7 +26,7 @@ installed `node_modules` is stale or came from another machine
 | ← / → (A / D) | Walk |
 | ↑ / ↓ (W / S) | Aim |
 | Enter (J) | Jump forward; press twice quickly for a high back jump |
-| Click the weapon box (top right) or right-click | Open the weapon menu, then click a weapon (see below) |
+| Move the mouse to the right edge (or click the weapon box, or right-click) | Slide out the weapon drawer, then click a weapon (see below) |
 | Space | Use the weapon (hold and release to charge the bazooka and grenade; press again to stop the drill or blowtorch) |
 | P | Replay the last finished move |
 | M | Whole map on screen (press again to go back) |
@@ -63,7 +63,7 @@ another snail to knock it away (into the water, or off a cliff for a painful fal
 Each team keeps its last weapon between turns. Ammo is unlimited for now.
 
 On a phone, hold it sideways: on-screen buttons appear for walking, aiming, jumping and
-firing; tap the weapon box to open the weapon menu, then tap a weapon. The top row has replay last move, skip replay, new map,
+firing; tap the weapon box to slide out the weapon drawer, then tap a weapon. The top row has replay last move, skip replay, new map,
 whole map (🗺) and full screen. Drag the map with one finger, pinch to zoom. `?touch=1` shows the buttons on a desktop too.
 
 URL options: `?seed=123` (fixed map), `?hp=60`, `?snails=2` (per team, 1-4),

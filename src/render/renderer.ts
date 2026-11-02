@@ -13,8 +13,10 @@ const HUD_MARGIN = 16;
 const WIND_H = 40;
 const TILE = 44;
 const TILE_GAP = 6;
-/** The weapon menu is a grid this many wide; it grows downward as weapons are added. */
-const MENU_COLS = 5;
+/** The weapon drawer is a grid this many wide; it grows downward as weapons are added. */
+const MENU_COLS = 3;
+/** Pointer this close to the right edge (canvas px) slides the drawer out on a laptop. */
+const EDGE_HOVER = 28;
 const MENU_PAD = 10;
 const MENU_HEAD = 26;
 const MENU_W = MENU_COLS * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD * 2;
@@ -890,17 +892,21 @@ export class Renderer {
     return { x: VIEW_W - HUD_MARGIN - TILE * k, y: HUD_MARGIN + (WIND_H + TILE_GAP) * k, size: TILE * k };
   }
 
-  /** Top-left of the open menu panel, right under the weapon box. */
-  private menuOrigin(): { x: number; y: number } {
+  /**
+   * Top-left of the drawer, right under the weapon box. While sliding it sits further right,
+   * partly past the edge; `settled` gives where it ends up fully open (for hit tests).
+   */
+  private menuOrigin(settled = false): { x: number; y: number } {
     const k = this.uiScale;
     const box = this.weaponBox();
-    return { x: VIEW_W - HUD_MARGIN - MENU_W * k, y: box.y + box.size + TILE_GAP * k };
+    const hidden = settled ? 0 : (1 - this.slide) * (MENU_W * k + HUD_MARGIN);
+    return { x: VIEW_W - HUD_MARGIN - MENU_W * k + hidden, y: box.y + box.size + TILE_GAP * k };
   }
 
-  /** Weapon tile i (0-based) in the open menu, in canvas pixels. */
-  private menuTile(i: number): Rect {
+  /** Weapon tile i (0-based) in the drawer, in canvas pixels. */
+  private menuTile(i: number, settled = false): Rect {
     const k = this.uiScale;
-    const o = this.menuOrigin();
+    const o = this.menuOrigin(settled);
     return {
       x: o.x + (MENU_PAD + (i % MENU_COLS) * (TILE + TILE_GAP)) * k,
       y: o.y + (MENU_HEAD + Math.floor(i / MENU_COLS) * (TILE + TILE_GAP)) * k,
@@ -913,11 +919,41 @@ export class Renderer {
     return state.phase !== 'aiming' || state.shotsFired > 0 || state.charging;
   }
 
-  /** The weapon menu is open (tap the weapon box or right-click to open it). */
+  /** The weapon drawer is out (hover the right edge, tap the weapon box, or right-click). */
   menuOpen = false;
+  /** 0 = drawer hidden past the right edge, 1 = fully out; eases toward menuOpen. */
+  private slide = 0;
+  /** Opened by hovering, so moving away closes it again. */
+  private hoverOpen = false;
 
   toggleMenu(state: GameState): void {
     this.menuOpen = !this.menuOpen && !this.weaponsLocked(state);
+    this.hoverOpen = false;
+  }
+
+  /**
+   * Mouse moved (no button held): the drawer slides out while the pointer is at the right
+   * edge, on the weapon box or on the drawer, and back in once it leaves. Pass null when the
+   * mouse leaves the canvas.
+   */
+  hover(x: number | null, y: number, state: GameState): void {
+    const k = this.uiScale;
+    const box = this.weaponBox();
+    const o = this.menuOrigin(true);
+    const rows = Math.ceil(WEAPONS.length / MENU_COLS);
+    const panelH = (MENU_HEAD + rows * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD) * k;
+    const over =
+      x !== null &&
+      (x >= VIEW_W - EDGE_HOVER ||
+        (x >= box.x && y >= box.y && y <= box.y + box.size) ||
+        (this.menuOpen && x >= o.x - 12 * k && y >= box.y && y <= o.y + panelH + 12 * k));
+    if (over && !this.menuOpen && !this.weaponsLocked(state)) {
+      this.menuOpen = true;
+      this.hoverOpen = true;
+    } else if (!over && this.menuOpen && this.hoverOpen) {
+      this.menuOpen = false;
+      this.hoverOpen = false;
+    }
   }
 
   /**
@@ -932,7 +968,8 @@ export class Renderer {
     }
     if (!this.menuOpen) return { used: false, weapon: 0 };
     this.menuOpen = false;
-    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(i))) return { used: true, weapon: i + 1 };
+    this.hoverOpen = false;
+    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(i, true))) return { used: true, weapon: i + 1 };
     // A tap anywhere else just closes the menu.
     return { used: true, weapon: 0 };
   }
@@ -984,7 +1021,8 @@ export class Renderer {
 
   /** The open weapon menu: every weapon as an icon, tap one to pick it. */
   private drawWeaponMenu(ctx: CanvasRenderingContext2D, state: GameState): void {
-    if (!this.menuOpen) return;
+    this.slide += ((this.menuOpen ? 1 : 0) - this.slide) * 0.25;
+    if (this.slide < 0.01) return;
     const current = state.teams[state.activeTeam]?.weapon;
     const k = this.uiScale;
     const o = this.menuOrigin();
@@ -1037,7 +1075,7 @@ export class Renderer {
       ctx.fillStyle = '#ffffffaa';
       ctx.textAlign = 'left';
       if (!this.touch) {
-        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   click weapon box   Space fire   P replay   M map   drag/wheel look   C center   R new map', 88, 20);
+        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   mouse to right edge: weapons   Space fire   P replay   M map   drag/wheel look   C center   R new map', 88, 20);
       }
       ctx.fillText(`Turn ${state.turnNumber}`, 88, 40);
     });
