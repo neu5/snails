@@ -55,6 +55,8 @@ canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointermove', (e) => {
+  // A mouse at the right edge slides the weapon drawer out.
+  if (e.pointerType === 'mouse' && e.buttons === 0) renderer.hover(...canvasPoint(e), state);
   const prev = pointers.get(e.pointerId);
   if (!prev) return;
   const [x, y] = canvasPoint(e);
@@ -69,6 +71,9 @@ canvas.addEventListener('pointermove', (e) => {
   pointers.set(e.pointerId, [x, y]);
 });
 const lift = (e: PointerEvent) => pointers.delete(e.pointerId);
+canvas.addEventListener('pointerleave', (e) => {
+  if (e.pointerType === 'mouse') renderer.hover(null, 0, state);
+});
 canvas.addEventListener('pointerup', lift);
 canvas.addEventListener('pointercancel', lift);
 canvas.addEventListener('contextmenu', (e) => {
