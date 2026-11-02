@@ -16,11 +16,9 @@ const BINDINGS: Record<string, Held> = {
   Space: 'fire',
 };
 
-const WEAPON_KEYS: Record<string, number> = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`Digit${n}`, n]));
-
 /**
  * Tracks held keys and samples them into an InputFrame once per simulation tick. On-screen
- * controls (touch, weapon bar taps) feed the same state through setHeld/pickWeapon/trigger.
+ * controls (touch, the weapon menu) feed the same state through setHeld/pickWeapon/trigger.
  */
 export class KeyboardInput {
   private held = new Set<Held>();
@@ -31,9 +29,8 @@ export class KeyboardInput {
   private taps = new Map<Held, number>();
   /** Controls that were on in the last sample. */
   private lastOn = new Set<Held>();
-  /** Last weapon key pressed; kept until sampled once, so a quick tap between ticks still counts. */
+  /** Weapon picked from the menu; kept until sampled once. */
   private weapon = 0;
-  private weaponHeld = false;
   private onKey = new Map<string, () => void>();
 
   constructor(target: Window = window) {
@@ -43,21 +40,15 @@ export class KeyboardInput {
         if (!e.repeat) this.setHeld(b, true);
         e.preventDefault();
       }
-      if (WEAPON_KEYS[e.code]) {
-        this.weapon = WEAPON_KEYS[e.code];
-        this.weaponHeld = true;
-      }
       if (!e.repeat) this.onKey.get(e.code)?.();
     });
     target.addEventListener('keyup', (e) => {
       const b = BINDINGS[e.code];
       if (b) this.held.delete(b);
-      if (WEAPON_KEYS[e.code] === this.weapon) this.weaponHeld = false;
     });
     target.addEventListener('blur', () => {
       this.held.clear();
       this.taps.clear();
-      this.weaponHeld = false;
     });
   }
 
@@ -80,10 +71,9 @@ export class KeyboardInput {
     }
   }
 
-  /** Selects a weapon (1-based) on the next tick, like a tap of its number key. */
+  /** Selects a weapon (1-based index into WEAPONS) on the next tick. */
   pickWeapon(n: number): void {
     this.weapon = n;
-    this.weaponHeld = false;
   }
 
   sample(): InputFrame {
@@ -108,7 +98,7 @@ export class KeyboardInput {
       fire: on('fire'),
       weapon: this.weapon,
     };
-    if (!this.weaponHeld) this.weapon = 0;
+    this.weapon = 0;
     return frame;
   }
 }

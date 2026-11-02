@@ -15,9 +15,9 @@ import {
 } from './types';
 
 export const TICK_RATE = 60;
-export const MAP_W = 1280;
-export const MAP_H = 720;
-export const WATER_Y = 684;
+export const MAP_W = 2560;
+export const MAP_H = 1080;
+export const WATER_Y = 1040;
 
 export const SNAIL_R = 8;
 const WALK_SPEED = 0.7;
@@ -144,10 +144,11 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     let x = 0;
     let y: number | null = null;
     for (let attempt = 0; attempt < 400; attempt++) {
-      x = Math.floor(rng.range(MAP_W * 0.1, MAP_W * 0.9));
+      // Away from the coasts, which slope down into the sea.
+      x = Math.floor(rng.range(MAP_W * 0.2, MAP_W * 0.8));
       if (usedX.some((u) => Math.abs(u - x) < 70) && attempt < 300) continue;
       y = findSurfaceY(terrain, x);
-      if (y !== null && y < WATER_Y - 40) break;
+      if (y !== null && y < WATER_Y - 120) break;
       y = null;
     }
     if (y === null) y = 0;

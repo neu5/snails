@@ -115,7 +115,11 @@ describe('weapons', () => {
   it('a mine blows up its owner who stands still', () => {
     const state = ready();
     select(state, 'mine');
+    const me = activeSnail(state)!;
     const events = run(state, { ...EMPTY_INPUT, fire: true }, 1);
+    // Drop it right at the snail's feet, so a slope cannot roll it out of reach.
+    state.objects[0].x = me.x;
+    state.objects[0].vx = 0;
     events.push(...run(state, EMPTY_INPUT, MINE_ARM_TICKS + 80));
     expect(count(events, 'mineTriggered')).toBe(1);
     expect(count(events, 'explosion')).toBe(1);

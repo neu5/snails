@@ -11,7 +11,7 @@ export interface InputFrame {
   down: boolean;
   jump: boolean;
   fire: boolean;
-  /** 1-based index into WEAPONS while a weapon key is held, 0 otherwise (at most 15). */
+  /** 1-based index into WEAPONS on the tick a weapon is picked from the menu, else 0 (at most 63). */
   weapon: number;
 }
 
@@ -27,7 +27,7 @@ export const EMPTY_INPUT: InputFrame = {
 
 export type WeaponId = 'bazooka' | 'grenade' | 'gun' | 'uzi' | 'mine' | 'dynamite' | 'drill' | 'torch' | 'rope';
 
-/** Selection order; keys 1-9 pick these. */
+/** Order in the weapon menu; InputFrame.weapon indexes this (1-based). */
 export const WEAPONS: readonly WeaponId[] = ['bazooka', 'grenade', 'gun', 'uzi', 'mine', 'dynamite', 'drill', 'torch', 'rope'];
 
 /**

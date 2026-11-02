@@ -43,13 +43,33 @@ export function generateTerrain(w: number, h: number, waterY: number, rng: Rng):
     });
   }
   const base = h * 0.55;
+  // Each coast is its own shape: how much open sea before it, how long the slope down is,
+  // and whether it drops like a cliff or runs out as a gentle beach.
+  const coast = () => ({
+    sea: rng.range(0.04, 0.08) * w,
+    len: rng.range(0.07, 0.15) * w,
+    cliff: rng.range(0, 1),
+    phase: rng.range(0, 6.283),
+  });
+  const coasts = [coast(), coast()];
+  const seabed = waterY + 60;
   const heights = new Float64Array(w);
   for (let x = 0; x < w; x++) {
     let y = base;
     for (const wv of waves) y += wv.amp * dsin(x * wv.freq + wv.phase);
-    // Raise the middle a bit and sink the edges so the map reads as an island.
-    const edge = Math.min(x, w - 1 - x) / w;
-    if (edge < 0.08) y += (0.08 - edge) * 1400;
+    const c = x < w / 2 ? coasts[0] : coasts[1];
+    const d = Math.min(x, w - 1 - x) - c.sea;
+    if (d <= 0) {
+      y = seabed;
+    } else if (d < c.len) {
+      const t = d / c.len;
+      // Blend an S-curve (beach) with a square root (steep at the waterline, a cliff).
+      const smooth = t * t * (3 - 2 * t);
+      const f = smooth * (1 - c.cliff) + Math.sqrt(t) * c.cliff;
+      // Rocky bumps on the slope, fading out inland.
+      const rocks = (dsin(x * 0.045 + c.phase) * 6 + dsin(x * 0.13 + c.phase) * 3) * (1 - t);
+      y = seabed + (y - seabed) * f + rocks;
+    }
     heights[x] = y;
   }
   for (let x = 0; x < w; x++) {
@@ -59,7 +79,9 @@ export function generateTerrain(w: number, h: number, waterY: number, rng: Rng):
   const t: Terrain = { w, h, data, version: 0 };
 
   // Caves and pockmarks.
-  const caves = rng.int(3, 6);
+  // Counts scale with the map's width (tuned on a 1280 px wide one).
+  const per = w / 1280;
+  const caves = Math.round(rng.int(3, 6) * per);
   for (let i = 0; i < caves; i++) {
     const cx = rng.range(w * 0.15, w * 0.85);
     const cy = rng.range(h * 0.62, waterY - 40);
@@ -73,7 +95,7 @@ export function generateTerrain(w: number, h: number, waterY: number, rng: Rng):
     }
   }
   // A couple of floating ledges.
-  const ledges = rng.int(1, 3);
+  const ledges = Math.round(rng.int(1, 3) * per);
   for (let i = 0; i < ledges; i++) {
     const lx = rng.range(w * 0.2, w * 0.8);
     const ly = rng.range(h * 0.2, h * 0.35);
