@@ -1,8 +1,9 @@
 import { Bot } from './ai/bot';
 import { KeyboardInput } from './input/keyboard';
+import { addTouchControls } from './input/touch';
 import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store';
 import { Renderer, TEAM_COLORS } from './render/renderer';
-import { DEFAULT_CONFIG, TICK_RATE, createGame } from './sim/game';
+import { DEFAULT_CONFIG, MAP_H, MAP_W, TICK_RATE, createGame } from './sim/game';
 import { TurnPlayback, TurnRecorder, applyTurn, rebuild, type MatchRecord, type TurnRecord } from './sim/turnlog';
 import type { GameConfig, GameState } from './sim/types';
 
@@ -23,6 +24,24 @@ const isLocal = (team: number): boolean => !asyncPlay || team === myTeam || botT
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const renderer = new Renderer(canvas);
 const keyboard = new KeyboardInput();
+/** Phones and tablets get on-screen buttons; ?touch=1 forces them on a desktop. */
+const touch = params.get('touch') === '1' || matchMedia('(pointer: coarse)').matches;
+renderer.touch = touch;
+if (touch) addTouchControls(keyboard);
+
+// Grow the HUD when the canvas is drawn small so its text stays readable.
+function fitUi(): void {
+  renderer.uiScale = Math.min(1.8, Math.max(1, (0.75 * MAP_W) / (canvas.clientWidth || MAP_W)));
+}
+window.addEventListener('resize', fitUi);
+fitUi();
+
+// Tapping or clicking the weapon bar picks a weapon.
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const n = renderer.weaponAt(((e.clientX - r.left) * MAP_W) / r.width, ((e.clientY - r.top) * MAP_H) / r.height);
+  if (n) keyboard.pickWeapon(n);
+});
 const baseTitle = document.title;
 
 type Mode =
@@ -224,7 +243,7 @@ function statusLine(): Renderer['status'] {
     case 'replay': {
       const t = mode.playback.record;
       const what = mode.resume ? `Replay of turn ${t.turn}` : `${teamName(t.team)}'s move (turn ${t.turn})`;
-      return { text: `${what}  ·  Esc to skip`, color: TEAM_COLORS[t.team] };
+      return { text: `${what}  ·  ${touch ? 'tap ⏭' : 'Esc'} to skip`, color: TEAM_COLORS[t.team] };
     }
     case 'waiting':
       if (mode.error) return { text: `Replay failed: ${mode.error}`, color: '#ff6b6b' };

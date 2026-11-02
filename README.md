@@ -1,7 +1,8 @@
 # Snails
 
-A turn-based artillery game for the browser: two teams of snails take turns lobbing
-bazooka shells across a destructible island. Original art (drawn in code) and names.
+A turn-based artillery game for the browser: two teams of snails take turns blasting each
+other across a destructible island with bazookas, grenades, guns, uzis, mines and dynamite,
+or dig through it with a drill and a blowtorch. Original art (drawn in code) and names.
 
 ## Run
 
@@ -24,14 +25,34 @@ installed `node_modules` is stale or came from another machine
 | --- | --- |
 | ← / → (A / D) | Walk |
 | ↑ / ↓ (W / S) | Aim |
-| Enter (J) | Jump |
-| Space (hold, release) | Charge and fire the bazooka |
+| Enter (J) | Jump forward; press twice quickly for a high back jump |
+| 1-8 (or click the icon) | Pick a weapon (see below) |
+| Space | Use the weapon (hold and release to charge the bazooka and grenade; press again to stop the drill or blowtorch) |
 | P | Replay the last finished move |
 | Esc | Skip a replay |
 | R | New random map (async: only after the game ends) |
 
-Each turn lasts 30 seconds. Explosions carve the terrain, damage snails by distance and
-knock them back. Falls hurt, and the water is fatal. The last team with snails left wins.
+Each turn lasts 30 seconds. After using a weapon the snail gets 3 seconds to walk away.
+Explosions carve the terrain, damage snails by distance and knock them back. Falls hurt (and a
+painful fall ends your move), and
+the water is fatal. The last team with snails left wins.
+
+| Key | Weapon | How it works |
+| --- | --- | --- |
+| 1 | Bazooka | Charged shot, wind bends it, explodes on impact |
+| 2 | Grenade | Charged throw, bounces, no wind, explodes after 3 s |
+| 3 | Gun | Two instant shots (25 damage each); you may re-aim between them |
+| 4 | Uzi | Burst of ten bullets (5 each), aim while it fires |
+| 5 | Mine | Dropped at your feet, arms after 2 s, stays between turns, goes off when a snail comes close |
+| 6 | Dynamite | Dropped at your feet, 5 s fuse, the biggest blast |
+| 7 | Drill | Digs straight down for 2.5 s, taking the snail with it (into the water, if deep enough); hurts snails in the way (never below 1 HP) |
+| 8 | Blowtorch | Cuts a tunnel along the aim (at most 60° up or down) for 3 s, taking the snail with it; burns snails in the way (never below 1 HP); it cannot cut out into open air or start mid-jump: out over a gap the snail falls and keeps cutting; a painful fall stops it and ends the move |
+
+Each team keeps its last weapon between turns. Ammo is unlimited for now.
+
+On a phone, hold it sideways: on-screen buttons appear for walking, aiming, jumping and
+firing; tap a weapon icon to pick it. The top row has replay last move, skip replay, new map
+and full screen. `?touch=1` shows the buttons on a desktop too.
 
 URL options: `?seed=123` (fixed map), `?hp=60`, `?snails=2` (per team, 1-4),
 `?turn=20` (seconds), `?bots=1` (team 2 is a bot) or `?bots=0,1` (bot vs bot).
@@ -59,7 +80,7 @@ desyncs and cheats.
 
 ```
 src/sim/     deterministic simulation (no DOM, no Math.random, no wall-clock time)
-  game.ts    createGame(config) / step(state, input) -> events / hashState(state)
+  game.ts    createGame(config) / step(state, input) -> events / hashState(state); weapons
   terrain.ts bitmask terrain, generation, carving
   math.ts    seeded RNG + engine-independent sin/cos
   turnlog.ts TurnRecorder / TurnPlayback / applyTurn / rebuild: per-turn input logs

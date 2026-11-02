@@ -1,5 +1,13 @@
-import { MAP_H, MAP_W, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector } from '../sim/game';
-import type { GameState, SimEvent, Snail } from '../sim/types';
+import { MAP_H, MAP_W, MINE_ARM_TICKS, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { WEAPONS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
+
+const HUD_MARGIN = 16;
+const WIND_H = 40;
+const TILE = 40;
+const TILE_GAP = 4;
+/** Weapon icons sit in a grid this many wide, under the wind box of the same width. */
+const BAR_COLS = 4;
+const BAR_W = BAR_COLS * (TILE + TILE_GAP) - TILE_GAP;
 
 export const TEAM_COLORS = ['#ff8a3d', '#5ec8ff'];
 const TEAM_SHELL = [
@@ -16,6 +24,18 @@ interface Particle {
   max: number;
   color: string;
   size: number;
+  /** Gravity per frame; defaults to 0.15. Negative floats up (smoke). */
+  g?: number;
+  /** Drawn additively so it glows (sparks, embers). */
+  glow?: boolean;
+}
+
+interface Tracer {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  life: number;
 }
 
 interface FloatText {
@@ -34,11 +54,16 @@ export class Renderer {
   private sky: CanvasGradient;
   private particles: Particle[] = [];
   private texts: FloatText[] = [];
+  private tracers: Tracer[] = [];
   private shake = 0;
   private banner: { text: string; color: string; life: number } | null = null;
   private frame = 0;
   /** Persistent line under the banner, e.g. "Waiting for ..."; set by the app each frame. */
   status: { text: string; color: string } | null = null;
+  /** HUD size factor; above 1 when the canvas is shown small (phones). */
+  uiScale = 1;
+  /** Touch device: hide key hints. */
+  touch = false;
 
   constructor(canvas: HTMLCanvasElement) {
     canvas.width = MAP_W;
@@ -56,6 +81,7 @@ export class Renderer {
   reset(): void {
     this.particles = [];
     this.texts = [];
+    this.tracers = [];
     this.terrainVersion = -1;
     this.banner = null;
   }
@@ -109,6 +135,45 @@ export class Renderer {
               size: 2 + Math.random() * 2,
             });
           }
+          break;
+        case 'bullet':
+          this.tracers.push({ x0: e.x0, y0: e.y0, x1: e.x1, y1: e.y1, life: 0 });
+          if (e.hit) {
+            for (let i = 0; i < 6; i++) {
+              this.particles.push({
+                x: e.x1,
+                y: e.y1,
+                vx: (Math.random() - 0.5) * 3,
+                vy: -Math.random() * 2.5,
+                life: 0,
+                max: 18,
+                color: i % 2 ? '#ffe17a' : '#6b4a2f',
+                size: 2,
+              });
+            }
+          }
+          break;
+        case 'dig': {
+          // The torch melts rock into glowing drips; the drill throws dirt.
+          const torch = state.teams[state.activeTeam].weapon === 'torch';
+          for (let i = 0; i < 8; i++) {
+            this.particles.push({
+              x: e.x + (Math.random() - 0.5) * 16,
+              y: e.y + (Math.random() - 0.5) * 16,
+              vx: (Math.random() - 0.5) * 2.5,
+              vy: -Math.random() * 2,
+              life: 0,
+              max: torch ? 35 : 25,
+              color: torch ? (i % 2 ? '#ff7a1a' : '#ffd166') : i % 3 ? '#8a5f3c' : '#ffcf6b',
+              size: 2 + Math.random() * 2,
+              glow: torch,
+            });
+          }
+          this.shake = Math.max(this.shake, torch ? 1 : 2);
+          break;
+        }
+        case 'mineTriggered':
+          this.texts.push({ x: e.x, y: e.y - 16, text: 'beep!', color: '#ff5555', life: 0 });
           break;
         case 'turn': {
           const s = state.snails[e.snailId];
@@ -173,7 +238,9 @@ export class Renderer {
     ctx.drawImage(this.terrainCanvas, 0, 0);
 
     for (const s of state.snails) this.drawSnail(ctx, state, s);
-    if (state.projectile) this.drawProjectile(ctx, state.projectile.x, state.projectile.y, state.projectile.vx, state.projectile.vy);
+    for (const o of state.objects) this.drawObject(ctx, o);
+    this.drawDigTool(ctx, state);
+    this.drawTracers(ctx);
     this.drawAim(ctx, state);
     this.drawParticles(ctx);
     this.drawWater(ctx);
@@ -231,8 +298,10 @@ export class Renderer {
     const [shellLight, shellDark] = TEAM_SHELL[s.team];
     const f = s.facing;
     const bob = isActive ? Math.sin(this.frame * 0.15) * 0.8 : 0;
+    // Holding a running tool makes the snail tremble.
+    const tremble = isActive && state.phase === 'digging' ? 1.6 : 0;
     ctx.save();
-    ctx.translate(s.x, s.y + SNAIL_R - 1);
+    ctx.translate(s.x + (Math.random() - 0.5) * tremble, s.y + SNAIL_R - 1 + (Math.random() - 0.5) * tremble);
     ctx.scale(f, 1);
     // Foot / body.
     ctx.fillStyle = '#d9c9a3';
@@ -307,6 +376,76 @@ export class Renderer {
     }
   }
 
+  private drawObject(ctx: CanvasRenderingContext2D, o: Projectile): void {
+    switch (o.kind) {
+      case 'shell':
+        this.drawProjectile(ctx, o.x, o.y, o.vx, o.vy);
+        return;
+      case 'grenade':
+        ctx.fillStyle = '#3f5a2a';
+        ctx.beginPath();
+        ctx.arc(o.x, o.y - 4, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#9aa58a';
+        ctx.fillRect(o.x - 1.5, o.y - 10, 3, 3);
+        break;
+      case 'mine': {
+        const armed = o.age >= MINE_ARM_TICKS;
+        ctx.fillStyle = '#2a2a2e';
+        ctx.beginPath();
+        ctx.ellipse(o.x, o.y - 3, 6, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const blink = o.fuse > 0 ? this.frame % 6 < 3 : armed && this.frame % 40 < 6;
+        ctx.fillStyle = blink ? '#ff3b3b' : armed ? '#7a1f1f' : '#4f4f55';
+        ctx.beginPath();
+        ctx.arc(o.x, o.y - 6, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+      case 'dynamite':
+        ctx.fillStyle = '#c9302c';
+        ctx.fillRect(o.x - 3, o.y - 12, 6, 12);
+        ctx.fillStyle = '#f4e3c1';
+        ctx.fillRect(o.x - 3, o.y - 9, 6, 2);
+        ctx.strokeStyle = '#ddd';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(o.x, o.y - 12);
+        ctx.quadraticCurveTo(o.x + 3, o.y - 16, o.x + 1, o.y - 18);
+        ctx.stroke();
+        if (this.frame % 3 === 0) {
+          this.particles.push({ x: o.x + 1, y: o.y - 18, vx: (Math.random() - 0.5) * 1.5, vy: -Math.random() * 1.5, life: 0, max: 10, color: '#ffd166', size: 2 });
+        }
+        break;
+    }
+    if (o.fuse > 0 && o.kind !== 'mine') {
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000';
+      const label = String(Math.ceil(o.fuse / TICK_RATE));
+      ctx.strokeText(label, o.x, o.y - 22);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, o.x, o.y - 22);
+    }
+  }
+
+  private drawTracers(ctx: CanvasRenderingContext2D): void {
+    const next: Tracer[] = [];
+    ctx.lineWidth = 1.5;
+    for (const t of this.tracers) {
+      t.life++;
+      if (t.life > 8) continue;
+      ctx.strokeStyle = `rgba(255, 236, 160, ${1 - t.life / 8})`;
+      ctx.beginPath();
+      ctx.moveTo(t.x0, t.y0);
+      ctx.lineTo(t.x1, t.y1);
+      ctx.stroke();
+      next.push(t);
+    }
+    this.tracers = next;
+  }
+
   private drawProjectile(ctx: CanvasRenderingContext2D, x: number, y: number, vx: number, vy: number): void {
     const a = Math.atan2(vy, vx);
     ctx.save();
@@ -329,9 +468,12 @@ export class Renderer {
   }
 
   private drawAim(ctx: CanvasRenderingContext2D, state: GameState): void {
-    if (state.phase !== 'aiming') return;
+    if (state.phase !== 'aiming' && state.phase !== 'firing') return;
     const s = activeSnail(state);
     if (!s || !s.alive) return;
+    const weapon = state.teams[state.activeTeam].weapon;
+    // Mines, dynamite and the drill need no aim.
+    if (weapon === 'mine' || weapon === 'dynamite' || weapon === 'drill') return;
     const [dx, dy] = aimVector(s);
     const cx = s.x + dx * 46;
     const cy = s.y + dy * 46;
@@ -344,16 +486,32 @@ export class Renderer {
     ctx.moveTo(cx, cy - 10);
     ctx.lineTo(cx, cy + 10);
     ctx.stroke();
-    // Bazooka tube.
     ctx.save();
     ctx.translate(s.x, s.y - 2);
     ctx.rotate(Math.atan2(dy, dx));
-    ctx.fillStyle = '#55613f';
-    ctx.fillRect(0, -3, 18, 6);
-    ctx.fillStyle = '#2e3522';
-    ctx.fillRect(15, -4, 4, 8);
+    if (weapon === 'bazooka') {
+      ctx.fillStyle = '#55613f';
+      ctx.fillRect(0, -3, 18, 6);
+      ctx.fillStyle = '#2e3522';
+      ctx.fillRect(15, -4, 4, 8);
+    } else if (weapon === 'grenade') {
+      ctx.fillStyle = '#3f5a2a';
+      ctx.beginPath();
+      ctx.arc(12, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (weapon === 'torch') {
+      ctx.fillStyle = '#c94f2c';
+      ctx.fillRect(2, -3, 10, 6);
+      ctx.fillStyle = '#9aa0aa';
+      ctx.fillRect(12, -1.5, 8, 3);
+    } else {
+      // Gun: long thin barrel. Uzi: short barrel with a magazine.
+      ctx.fillStyle = '#3a3a40';
+      ctx.fillRect(2, -2, weapon === 'gun' ? 20 : 13, 4);
+      if (weapon === 'uzi') ctx.fillRect(6, 1, 3, 6);
+    }
     ctx.restore();
-    if (state.charging) {
+    if (state.charging && isCharged(weapon)) {
       const n = Math.ceil(state.power * 12);
       for (let i = 0; i < n; i++) {
         const t = (i + 1) / 12;
@@ -363,6 +521,119 @@ export class Renderer {
         ctx.fill();
       }
     }
+  }
+
+  private puff(x: number, y: number, vx: number, vy: number, max: number, color: string, size: number, g?: number, glow?: boolean): void {
+    this.particles.push({ x, y, vx, vy, life: 0, max, color, size, g, glow });
+  }
+
+  /** The drill or blowtorch while it works. */
+  private drawDigTool(ctx: CanvasRenderingContext2D, state: GameState): void {
+    const d = state.dig;
+    const s = activeSnail(state);
+    if (state.phase !== 'digging' || !d || !s) return;
+    const len = Math.sqrt(d.dx * d.dx + d.dy * d.dy) || 1;
+    // Drawn at the snail, which the tool follows while falling.
+    if (state.teams[state.activeTeam].weapon === 'torch') this.drawTorch(ctx, s.x, s.y - 2, d.dx / len, d.dy / len);
+    else this.drawDrill(ctx, s.x, s.y);
+  }
+
+  /** Jackhammer: shaking body, pounding spiral bit, dirt and sparks at the tip. */
+  private drawDrill(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+    const f = this.frame;
+    const pound = f % 4 < 2 ? 0 : 3;
+    ctx.save();
+    ctx.translate(x + (Math.random() - 0.5) * 2, y - 6);
+    // Handle bar with grips.
+    ctx.fillStyle = '#b4bac4';
+    ctx.fillRect(-12, -16, 24, 4);
+    ctx.fillStyle = '#2e2e33';
+    ctx.fillRect(-14, -17, 6, 6);
+    ctx.fillRect(8, -17, 6, 6);
+    // Motor body with vents.
+    ctx.fillStyle = '#e0b030';
+    roundRect(ctx, -7, -12, 14, 16, 3);
+    ctx.fill();
+    ctx.fillStyle = '#8a6a10';
+    ctx.fillRect(-4, -8, 8, 1.5);
+    ctx.fillRect(-4, -4, 8, 1.5);
+    ctx.fillStyle = '#555';
+    ctx.fillRect(-3, 4, 6, 3);
+    // Bit: pounds up and down, its spiral runs down while it spins.
+    ctx.translate(0, pound);
+    ctx.fillStyle = '#9aa0aa';
+    ctx.beginPath();
+    ctx.moveTo(-3.5, 7);
+    ctx.lineTo(3.5, 7);
+    ctx.lineTo(0, 21);
+    ctx.fill();
+    ctx.strokeStyle = '#5d636d';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const by = 8 + ((i * 4 + f) % 13);
+      const w = 3.5 * (1 - (by - 7) / 14);
+      ctx.moveTo(-w, by + 1);
+      ctx.lineTo(w, by - 1);
+    }
+    ctx.stroke();
+    ctx.restore();
+    if (pound) {
+      const ty = y + 16;
+      for (let i = 0; i < 2; i++) {
+        const side = Math.random() < 0.5 ? -1 : 1;
+        this.puff(x + side * 4, ty, side * (1 + Math.random() * 2), -1 - Math.random() * 2, 20, i ? '#8a5f3c' : '#6b4a2f', 2 + Math.random() * 2);
+      }
+      if (Math.random() < 0.4) this.puff(x, ty, (Math.random() - 0.5) * 4, -2 - Math.random() * 2, 12, '#ffe17a', 1.5, 0.2, true);
+    }
+    if (f % 8 === 0) this.puff(x + (Math.random() - 0.5) * 10, y - 20, (Math.random() - 0.5) * 0.4, -0.4, 40, '#9a8a7a88', 4, -0.01);
+  }
+
+  /** Blowtorch: flickering two-tone flame with a glow, sparks and smoke. */
+  private drawTorch(ctx: CanvasRenderingContext2D, x: number, y: number, ux: number, uy: number): void {
+    const flick = 0.8 + Math.random() * 0.4;
+    const flame = 16 * flick;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(Math.atan2(uy, ux));
+    // Warm light around the flame.
+    ctx.globalCompositeOperation = 'lighter';
+    const glow = ctx.createRadialGradient(28, 0, 0, 28, 0, 34 * flick);
+    glow.addColorStop(0, 'rgba(255, 170, 60, 0.5)');
+    glow.addColorStop(1, 'rgba(255, 90, 0, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(28, 0, 34 * flick, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    // Gas bottle and nozzle.
+    ctx.fillStyle = '#c94f2c';
+    roundRect(ctx, -2, -4.5, 12, 9, 3);
+    ctx.fill();
+    ctx.fillStyle = '#9aa0aa';
+    ctx.fillRect(10, -1.5, 10, 3);
+    // Outer orange flame, blue cone, white core.
+    const cone = (l: number, w: number, color: string) => {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(20, -w);
+      ctx.quadraticCurveTo(20 + l * 0.7, -w * 0.9 + (Math.random() - 0.5), 20 + l, 0);
+      ctx.quadraticCurveTo(20 + l * 0.7, w * 0.9 + (Math.random() - 0.5), 20, w);
+      ctx.fill();
+    };
+    cone(flame * 1.3, 5, '#ff9f1c');
+    cone(flame * 0.75, 3, '#7fd1ff');
+    cone(flame * 0.35, 1.5, '#ffffff');
+    ctx.restore();
+    // Sparks bounce back off the rock at the flame tip; smoke drifts up.
+    const tx = x + ux * (20 + flame);
+    const ty = y + uy * (20 + flame);
+    for (let i = 0; i < 2; i++) {
+      const a = Math.atan2(-uy, -ux) + (Math.random() - 0.5) * 3;
+      const v = 1 + Math.random() * 1.8;
+      this.puff(tx, ty, Math.cos(a) * v, Math.sin(a) * v, 8 + Math.random() * 10, Math.random() < 0.5 ? '#ffd166' : '#ff7a1a', 1.5, 0.12, true);
+    }
+    if (this.frame % 5 === 0) this.puff(tx, ty - 4, (Math.random() - 0.5) * 0.5, -0.6, 45, '#6a6a7088', 4 + Math.random() * 3, -0.01);
   }
 
   private drawParticles(ctx: CanvasRenderingContext2D): void {
@@ -379,11 +650,15 @@ export class Renderer {
       } else {
         p.x += p.vx;
         p.y += p.vy;
-        p.vy += 0.15;
+        p.vy += p.g ?? 0.15;
         p.vx *= 0.98;
         ctx.globalAlpha = 1 - t;
+        if (p.glow) ctx.globalCompositeOperation = 'lighter';
         ctx.fillStyle = p.color;
-        ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+        // Smoke (rises) grows as it fades.
+        const size = p.g !== undefined && p.g < 0 ? p.size * (1 + t * 2) : p.size;
+        ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+        ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
       }
       next.push(p);
@@ -408,101 +683,307 @@ export class Renderer {
     this.texts = texts;
   }
 
-  private drawHud(ctx: CanvasRenderingContext2D, state: GameState): void {
-    // Turn timer.
-    const secs = Math.ceil(state.turnTicksLeft / TICK_RATE);
-    ctx.fillStyle = '#000a';
-    roundRect(ctx, 16, 16, 74, 52, 10);
-    ctx.fill();
-    ctx.font = 'bold 30px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = state.phase === 'aiming' ? (secs <= 5 ? '#ff5555' : TEAM_COLORS[state.activeTeam]) : '#888';
-    ctx.fillText(state.phase === 'aiming' ? String(secs) : '--', 53, 53);
+  /** Corner of weapon tile i (0-based) in canvas pixels, after uiScale. */
+  private weaponTile(i: number): { x: number; y: number; size: number } {
+    const k = this.uiScale;
+    const col = i % BAR_COLS;
+    const row = Math.floor(i / BAR_COLS);
+    return {
+      x: MAP_W - HUD_MARGIN - BAR_W * k + col * (TILE + TILE_GAP) * k,
+      y: HUD_MARGIN + (WIND_H + TILE_GAP * 2 + row * (TILE + TILE_GAP)) * k,
+      size: TILE * k,
+    };
+  }
 
-    // Team health bars.
-    const maxTotal = state.config.startHp * state.config.snailsPerTeam;
-    state.teams.forEach((t, i) => {
-      const hp = state.snails.filter((s) => s.team === t.id && s.alive).reduce((a, s) => a + Math.max(0, s.hp), 0);
-      const y = MAP_H - 58 + i * 22;
+  /** 1-based weapon index under a point in canvas pixels, or 0. */
+  weaponAt(x: number, y: number): number {
+    for (let i = 0; i < WEAPONS.length; i++) {
+      const t = this.weaponTile(i);
+      if (x >= t.x && x <= t.x + t.size && y >= t.y && y <= t.y + t.size) return i + 1;
+    }
+    return 0;
+  }
+
+  /** Draws `fn` with the origin at (x, y), scaled by uiScale around that point. */
+  private anchored(ctx: CanvasRenderingContext2D, x: number, y: number, fn: () => void): void {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(this.uiScale, this.uiScale);
+    fn();
+    ctx.restore();
+  }
+
+  private drawWeaponBar(ctx: CanvasRenderingContext2D, state: GameState): void {
+    const current = state.teams[state.activeTeam]?.weapon;
+    // Dim the bar while switching is not possible.
+    const locked = state.phase !== 'aiming' || state.shotsFired > 0 || state.charging;
+    WEAPONS.forEach((id, i) => {
+      const t = this.weaponTile(i);
+      const k = t.size / TILE;
+      const on = id === current;
+      ctx.globalAlpha = locked && !on ? 0.45 : 1;
+      ctx.fillStyle = on ? '#000c' : '#0007';
+      roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
+      ctx.fill();
+      if (on) {
+        ctx.strokeStyle = TEAM_COLORS[state.activeTeam];
+        ctx.lineWidth = 2.5 * k;
+        ctx.stroke();
+      }
+      if (!on) ctx.globalAlpha *= 0.7;
+      drawWeaponIcon(ctx, id, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
+      ctx.globalAlpha = 1;
+      if (!this.touch) {
+        ctx.font = `bold ${Math.round(10 * k)}px system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#fffa';
+        ctx.fillText(String(i + 1), t.x + 4 * k, t.y + 11 * k);
+      }
+    });
+  }
+
+  private drawHud(ctx: CanvasRenderingContext2D, state: GameState): void {
+    const secs = Math.ceil(state.turnTicksLeft / TICK_RATE);
+    this.anchored(ctx, HUD_MARGIN, HUD_MARGIN, () => {
+      // Turn timer.
       ctx.fillStyle = '#000a';
-      roundRect(ctx, MAP_W / 2 - 160, y, 320, 18, 6);
+      roundRect(ctx, 0, 0, 74, 52, 10);
       ctx.fill();
-      ctx.fillStyle = TEAM_COLORS[i];
-      roundRect(ctx, MAP_W / 2 - 158, y + 2, 316 * Math.min(1, hp / maxTotal), 14, 5);
-      ctx.fill();
-      ctx.font = 'bold 12px system-ui, sans-serif';
-      ctx.fillStyle = '#fff';
-      ctx.textAlign = 'right';
-      ctx.fillText(t.name, MAP_W / 2 - 168, y + 13);
+      ctx.font = 'bold 30px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      if (state.phase === 'retreat') {
+        ctx.fillStyle = '#ffd166';
+        ctx.fillText(String(Math.ceil(state.retreatTicks / TICK_RATE)), 37, 37);
+      } else {
+        ctx.fillStyle = state.phase === 'aiming' ? (secs <= 5 ? '#ff5555' : TEAM_COLORS[state.activeTeam]) : '#888';
+        ctx.fillText(state.phase === 'aiming' ? String(secs) : '--', 37, 37);
+      }
+
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.fillStyle = '#ffffffaa';
+      ctx.textAlign = 'left';
+      if (!this.touch) {
+        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   1-8 weapon   Space fire   P replay last move   R new map', 88, 20);
+      }
+      ctx.fillText(`Turn ${state.turnNumber}`, 88, 40);
     });
 
     // Wind.
-    ctx.fillStyle = '#000a';
-    roundRect(ctx, MAP_W - 196, 16, 180, 40, 10);
-    ctx.fill();
-    ctx.font = 'bold 12px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#ddd';
-    ctx.fillText('WIND', MAP_W - 186, 41);
-    const w = state.wind / 0.035;
-    ctx.fillStyle = '#333';
-    ctx.fillRect(MAP_W - 140, 30, 112, 12);
-    ctx.fillStyle = w >= 0 ? '#7fd1ff' : '#ffb37f';
-    const half = 56;
-    if (w >= 0) ctx.fillRect(MAP_W - 84, 30, half * w, 12);
-    else ctx.fillRect(MAP_W - 84 + half * w, 30, -half * w, 12);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(MAP_W - 85, 27, 2, 18);
-
-    // Controls hint.
-    ctx.font = '12px system-ui, sans-serif';
-    ctx.fillStyle = '#ffffffaa';
-    ctx.textAlign = 'left';
-    ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump   hold Space to fire   P replay last move   R new map', 104, 36);
-    ctx.fillText(`Turn ${state.turnNumber}`, 104, 56);
-
-    if (this.banner) {
-      this.banner.life++;
-      const b = this.banner;
-      if (b.life > 120) this.banner = null;
-      else {
-        const a = Math.min(1, (120 - b.life) / 30);
-        ctx.globalAlpha = a;
-        ctx.font = 'bold 26px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 6;
-        ctx.strokeStyle = '#000';
-        ctx.strokeText(b.text, MAP_W / 2, 110);
-        ctx.fillStyle = b.color;
-        ctx.fillText(b.text, MAP_W / 2, 110);
-        ctx.globalAlpha = 1;
-      }
-    }
-
-    if (this.status) {
-      ctx.font = 'bold 16px system-ui, sans-serif';
-      const w = ctx.measureText(this.status.text).width + 32;
-      ctx.fillStyle = '#000b';
-      roundRect(ctx, MAP_W / 2 - w / 2, 134, w, 30, 15);
+    this.anchored(ctx, MAP_W - HUD_MARGIN, HUD_MARGIN, () => {
+      const w = BAR_W;
+      ctx.fillStyle = '#000a';
+      roundRect(ctx, -w, 0, w, WIND_H, 10);
       ctx.fill();
-      ctx.textAlign = 'center';
-      ctx.fillStyle = this.status.color;
-      ctx.fillText(this.status.text, MAP_W / 2, 155);
-    }
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#ddd';
+      ctx.fillText('WIND', -w + 10, 25);
+      const barX = -w + 60;
+      const barW = w - 76;
+      const mid = barX + barW / 2;
+      const f = state.wind / 0.035;
+      ctx.fillStyle = '#333';
+      ctx.fillRect(barX, 14, barW, 12);
+      ctx.fillStyle = f >= 0 ? '#7fd1ff' : '#ffb37f';
+      if (f >= 0) ctx.fillRect(mid, 14, (barW / 2) * f, 12);
+      else ctx.fillRect(mid + (barW / 2) * f, 14, (-barW / 2) * f, 12);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(mid - 1, 11, 2, 18);
+    });
+
+    this.drawWeaponBar(ctx, state);
+
+    // Team health bars.
+    this.anchored(ctx, MAP_W / 2, MAP_H - HUD_MARGIN, () => {
+      const maxTotal = state.config.startHp * state.config.snailsPerTeam;
+      state.teams.forEach((t, i) => {
+        const hp = state.snails.filter((s) => s.team === t.id && s.alive).reduce((a, s) => a + Math.max(0, s.hp), 0);
+        const y = -42 + i * 22;
+        ctx.fillStyle = '#000a';
+        roundRect(ctx, -160, y, 320, 18, 6);
+        ctx.fill();
+        ctx.fillStyle = TEAM_COLORS[i];
+        roundRect(ctx, -158, y + 2, 316 * Math.min(1, hp / maxTotal), 14, 5);
+        ctx.fill();
+        ctx.font = 'bold 12px system-ui, sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'right';
+        ctx.fillText(t.name, -168, y + 13);
+      });
+    });
+
+    this.anchored(ctx, MAP_W / 2, 0, () => {
+      if (this.banner) {
+        this.banner.life++;
+        const b = this.banner;
+        if (b.life > 120) this.banner = null;
+        else {
+          ctx.globalAlpha = Math.min(1, (120 - b.life) / 30);
+          ctx.font = 'bold 26px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 6;
+          ctx.strokeStyle = '#000';
+          ctx.strokeText(b.text, 0, 130);
+          ctx.fillStyle = b.color;
+          ctx.fillText(b.text, 0, 130);
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      if (this.status) {
+        ctx.font = 'bold 16px system-ui, sans-serif';
+        const w = ctx.measureText(this.status.text).width + 32;
+        ctx.fillStyle = '#000b';
+        roundRect(ctx, -w / 2, 150, w, 30, 15);
+        ctx.fill();
+        ctx.textAlign = 'center';
+        ctx.fillStyle = this.status.color;
+        ctx.fillText(this.status.text, 0, 171);
+      }
+    });
 
     if (state.phase === 'gameover') {
       ctx.fillStyle = '#000b';
       ctx.fillRect(0, 0, MAP_W, MAP_H);
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 56px system-ui, sans-serif';
-      const won = state.winner !== null && state.winner >= 0;
-      ctx.fillStyle = won ? TEAM_COLORS[state.winner!] : '#fff';
-      ctx.fillText(won ? `${state.teams[state.winner!].name} win!` : 'Draw!', MAP_W / 2, MAP_H / 2 - 10);
-      ctx.font = '20px system-ui, sans-serif';
-      ctx.fillStyle = '#ddd';
-      ctx.fillText('Press R for a new map', MAP_W / 2, MAP_H / 2 + 34);
+      this.anchored(ctx, MAP_W / 2, MAP_H / 2, () => {
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 56px system-ui, sans-serif';
+        const won = state.winner !== null && state.winner >= 0;
+        ctx.fillStyle = won ? TEAM_COLORS[state.winner!] : '#fff';
+        ctx.fillText(won ? `${state.teams[state.winner!].name} win!` : 'Draw!', 0, -10);
+        ctx.font = '20px system-ui, sans-serif';
+        ctx.fillStyle = '#ddd';
+        ctx.fillText(this.touch ? 'Tap ⟳ for a new map' : 'Press R for a new map', 0, 34);
+      });
     }
   }
+}
+
+/** Weapon pictures for the HUD, drawn in a 32-unit box centred on (cx, cy) and scaled to `size`. */
+function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number, cy: number, size: number): void {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(size / 32, size / 32);
+  switch (id) {
+    case 'bazooka':
+      ctx.rotate(-0.5);
+      ctx.fillStyle = '#6b7a4f';
+      ctx.fillRect(-13, -4, 22, 8);
+      ctx.fillStyle = '#2e3522';
+      ctx.fillRect(-15, -5, 3, 10);
+      ctx.fillStyle = '#c9e06b';
+      ctx.beginPath();
+      ctx.moveTo(9, -4);
+      ctx.lineTo(15, 0);
+      ctx.lineTo(9, 4);
+      ctx.fill();
+      break;
+    case 'grenade':
+      ctx.fillStyle = '#4b6b30';
+      ctx.beginPath();
+      ctx.arc(0, 3, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#7f9b5a';
+      ctx.beginPath();
+      ctx.arc(-3, 0, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#9aa58a';
+      ctx.fillRect(-3, -9, 6, 4);
+      ctx.strokeStyle = '#c8cdbf';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(6, -10, 3, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    case 'gun':
+      ctx.fillStyle = '#b4bac4';
+      ctx.fillRect(-14, -7, 28, 5);
+      ctx.fillStyle = '#8a6a48';
+      ctx.beginPath();
+      ctx.moveTo(-12, -2);
+      ctx.lineTo(-5, -2);
+      ctx.lineTo(-7, 10);
+      ctx.lineTo(-14, 10);
+      ctx.fill();
+      ctx.strokeStyle = '#b4bac4';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(-3, 1, 3, 0, Math.PI);
+      ctx.stroke();
+      break;
+    case 'uzi':
+      ctx.fillStyle = '#9aa0aa';
+      ctx.fillRect(-11, -7, 20, 8);
+      ctx.fillRect(9, -5, 6, 3);
+      ctx.fillRect(-9, 1, 5, 9);
+      ctx.fillStyle = '#d0d4da';
+      ctx.fillRect(-1, 1, 5, 13);
+      ctx.fillRect(-8, -9, 3, 2);
+      break;
+    case 'mine':
+      ctx.fillStyle = '#767680';
+      ctx.beginPath();
+      ctx.ellipse(0, 5, 13, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#a3a3ad';
+      ctx.beginPath();
+      ctx.ellipse(0, 1, 8, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ff3b3b';
+      ctx.beginPath();
+      ctx.arc(0, -2, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'drill':
+      // Jackhammer: handle bar, body, bit pointing down.
+      ctx.fillStyle = '#b4bac4';
+      ctx.fillRect(-11, -14, 22, 4);
+      ctx.fillStyle = '#e0b030';
+      ctx.fillRect(-6, -10, 12, 14);
+      ctx.fillStyle = '#9aa0aa';
+      ctx.beginPath();
+      ctx.moveTo(-3, 4);
+      ctx.lineTo(3, 4);
+      ctx.lineTo(0, 15);
+      ctx.fill();
+      break;
+    case 'torch':
+      // Gas bottle with a nozzle and flame.
+      ctx.fillStyle = '#c94f2c';
+      roundRect(ctx, -14, -6, 10, 18, 4);
+      ctx.fill();
+      ctx.fillStyle = '#b4bac4';
+      ctx.fillRect(-4, -3, 10, 4);
+      ctx.fillStyle = '#ff9f1c';
+      ctx.beginPath();
+      ctx.moveTo(6, -6);
+      ctx.quadraticCurveTo(18, -1, 6, 4);
+      ctx.fill();
+      ctx.fillStyle = '#7fd1ff';
+      ctx.beginPath();
+      ctx.moveTo(6, -3);
+      ctx.quadraticCurveTo(12, -1, 6, 1);
+      ctx.fill();
+      break;
+    case 'dynamite':
+      ctx.rotate(0.25);
+      ctx.fillStyle = '#c9302c';
+      ctx.fillRect(-5, -9, 10, 22);
+      ctx.fillStyle = '#f4e3c1';
+      ctx.fillRect(-5, -3, 10, 3);
+      ctx.strokeStyle = '#ddd';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, -9);
+      ctx.quadraticCurveTo(5, -12, 3, -15);
+      ctx.stroke();
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath();
+      ctx.arc(3, -15, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+  }
+  ctx.restore();
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {

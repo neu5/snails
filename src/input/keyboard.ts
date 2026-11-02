@@ -1,6 +1,8 @@
 import type { InputFrame } from '../sim/types';
 
-const BINDINGS: Record<string, keyof InputFrame> = {
+export type Held = Exclude<keyof InputFrame, 'weapon'>;
+
+const BINDINGS: Record<string, Held> = {
   ArrowLeft: 'left',
   KeyA: 'left',
   ArrowRight: 'right',
@@ -14,40 +16,99 @@ const BINDINGS: Record<string, keyof InputFrame> = {
   Space: 'fire',
 };
 
-/** Tracks held keys and samples them into an InputFrame once per simulation tick. */
+const WEAPON_KEYS: Record<string, number> = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [`Digit${n}`, n]));
+
+/**
+ * Tracks held keys and samples them into an InputFrame once per simulation tick. On-screen
+ * controls (touch, weapon bar taps) feed the same state through setHeld/pickWeapon/trigger.
+ */
 export class KeyboardInput {
-  private held = new Set<keyof InputFrame>();
+  private held = new Set<Held>();
+  /**
+   * Presses not yet sampled, per control. A tap shorter than a tick still shows up, and two
+   * quick taps (double Enter) show up as two presses with a released tick between them.
+   */
+  private taps = new Map<Held, number>();
+  /** Controls that were on in the last sample. */
+  private lastOn = new Set<Held>();
+  /** Last weapon key pressed; kept until sampled once, so a quick tap between ticks still counts. */
+  private weapon = 0;
+  private weaponHeld = false;
   private onKey = new Map<string, () => void>();
 
   constructor(target: Window = window) {
     target.addEventListener('keydown', (e) => {
       const b = BINDINGS[e.code];
       if (b) {
-        this.held.add(b);
+        if (!e.repeat) this.setHeld(b, true);
         e.preventDefault();
+      }
+      if (WEAPON_KEYS[e.code]) {
+        this.weapon = WEAPON_KEYS[e.code];
+        this.weaponHeld = true;
       }
       if (!e.repeat) this.onKey.get(e.code)?.();
     });
     target.addEventListener('keyup', (e) => {
       const b = BINDINGS[e.code];
       if (b) this.held.delete(b);
+      if (WEAPON_KEYS[e.code] === this.weapon) this.weaponHeld = false;
     });
-    target.addEventListener('blur', () => this.held.clear());
+    target.addEventListener('blur', () => {
+      this.held.clear();
+      this.taps.clear();
+      this.weaponHeld = false;
+    });
   }
 
   bind(code: string, fn: () => void): void {
     this.onKey.set(code, fn);
   }
 
+  /** Runs the action bound to a key code, as if it was pressed. */
+  trigger(code: string): void {
+    this.onKey.get(code)?.();
+  }
+
+  setHeld(control: Held, on: boolean): void {
+    if (on) {
+      this.held.add(control);
+      // Capped so presses made while nothing samples (replays) do not pile up.
+      this.taps.set(control, Math.min(2, (this.taps.get(control) ?? 0) + 1));
+    } else {
+      this.held.delete(control);
+    }
+  }
+
+  /** Selects a weapon (1-based) on the next tick, like a tap of its number key. */
+  pickWeapon(n: number): void {
+    this.weapon = n;
+    this.weaponHeld = false;
+  }
+
   sample(): InputFrame {
-    const h = this.held;
-    return {
-      left: h.has('left'),
-      right: h.has('right'),
-      up: h.has('up'),
-      down: h.has('down'),
-      jump: h.has('jump'),
-      fire: h.has('fire'),
+    const on = (c: Held): boolean => {
+      const n = this.taps.get(c) ?? 0;
+      let out = this.held.has(c);
+      if (n > 0) {
+        // A new press right after one still on: let it go for a tick first, so it counts.
+        out = !this.lastOn.has(c);
+        if (out) this.taps.set(c, n - 1);
+      }
+      if (out) this.lastOn.add(c);
+      else this.lastOn.delete(c);
+      return out;
     };
+    const frame: InputFrame = {
+      left: on('left'),
+      right: on('right'),
+      up: on('up'),
+      down: on('down'),
+      jump: on('jump'),
+      fire: on('fire'),
+      weapon: this.weapon,
+    };
+    if (!this.weaponHeld) this.weapon = 0;
+    return frame;
   }
 }
