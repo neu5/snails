@@ -129,6 +129,11 @@ export class Renderer {
     this.sky.addColorStop(1, '#f0a37a');
   }
 
+  /** A short message in the banner spot, e.g. "Sound: off". */
+  notice(text: string): void {
+    this.banner = { text, color: '#fff', life: 40 };
+  }
+
   reset(): void {
     this.particles = [];
     this.texts = [];
@@ -1200,7 +1205,7 @@ export class Renderer {
       ctx.fillStyle = '#ffffffaa';
       ctx.textAlign = 'left';
       if (!this.touch) {
-        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   mouse to right edge: weapons   Space fire   P replay   M map   drag/wheel look   C center   R new map', 88, 20);
+        ctx.fillText('←/→ walk   ↑/↓ aim   Enter jump (×2 back)   mouse to right edge: weapons   Space fire   P replay   M map   drag/wheel look   C center   N sound   R new map', 88, 20);
       }
       ctx.fillText(`Turn ${state.turnNumber}`, 88, 40);
     });

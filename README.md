@@ -32,6 +32,7 @@ installed `node_modules` is stale or came from another machine
 | M | Whole map on screen (press again to go back) |
 | Drag / mouse wheel | Look around the map / zoom (two-finger pinch on a phone) |
 | C | Camera back on the action |
+| N | Sound: music and effects, effects only, or off (remembered) |
 | Esc | Skip a replay |
 | R | New random map (async: only after the game ends) |
 

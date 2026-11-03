@@ -42,6 +42,7 @@ const ACTIONS: [string, string, string][] = [
   ['Escape', '⏭', 'Skip replay'],
   ['KeyR', '⟳', 'New map'],
   ['KeyM', '🗺', 'Whole map'],
+  ['KeyN', '♪', 'Music and sound'],
 ];
 
 /** On-screen buttons for phones. They press the same virtual keys as the keyboard. */

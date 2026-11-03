@@ -1,4 +1,5 @@
 import { Bot } from './ai/bot';
+import { Sound } from './audio/sound';
 import { KeyboardInput } from './input/keyboard';
 import { addTouchControls } from './input/touch';
 import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store';
@@ -272,6 +273,10 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) document.title = baseTitle;
 });
 
+const sound = new Sound(() => ({ x: renderer.camera.x, halfW: VIEW_W / 2 / renderer.camera.zoom }));
+const SOUND_LABELS = { all: 'Music and sound on', sfx: 'Music off, sound on', off: 'Sound off' };
+keyboard.bind('KeyN', () => renderer.notice(SOUND_LABELS[sound.cycle()]));
+
 keyboard.bind('KeyR', () => {
   // In async play a new map would end the match for the other player too.
   if (!asyncPlay || state.phase === 'gameover') void newMatch(Math.floor(Math.random() * 1e9));
@@ -310,13 +315,16 @@ function tick(): void {
       const bot = bots.get(state.activeTeam);
       const { events, turn } = mode.recorder.step(bot ? bot.input(state) : keyboard.sample());
       renderer.handleEvents(state, events);
+      sound.handleEvents(state, events);
       if (turn) commit(turn);
       break;
     }
     case 'replay': {
       const { playback, queue, resume } = mode;
       try {
-        renderer.handleEvents(state, playback.step());
+        const events = playback.step();
+        renderer.handleEvents(state, events);
+        sound.handleEvents(state, events);
       } catch (e) {
         fail(e);
         break;
@@ -344,6 +352,7 @@ function frame(now: number): void {
   }
   renderer.status = statusLine();
   renderer.render(state);
+  sound.update(state);
   requestAnimationFrame(frame);
 }
 
@@ -355,6 +364,7 @@ function frame(now: number): void {
     return match;
   },
   newMatch,
+  sound,
 };
 
 void (async () => {
