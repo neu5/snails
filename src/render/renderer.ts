@@ -1,4 +1,4 @@
-import { MAP_H, MAP_W, MINE_ARM_TICKS, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { GIRDER_LEN, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
 import { WEAPONS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
@@ -13,26 +13,34 @@ const HUD_MARGIN = 16;
 const WIND_H = 40;
 const TILE = 44;
 const TILE_GAP = 6;
-/** The weapon drawer is a grid this many wide; it grows downward as weapons are added. */
-const MENU_COLS = 3;
+/** The weapon drawer is a grid at least this many wide; it widens when rows run out of room. */
+const MENU_MIN_COLS = 3;
+/** Space kept free under the drawer (health bars, touch buttons), unscaled px. */
+const MENU_FOOT = 110;
 /** Pointer this close to the right edge (canvas px) slides the drawer out on a laptop. */
 const EDGE_HOVER = 28;
 const MENU_PAD = 10;
 const MENU_HEAD = 26;
-const MENU_W = MENU_COLS * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD * 2;
 /** Wind box width; the current-weapon box sits under its right end. */
 const BAR_W = 172;
 
 const WEAPON_NAMES: Record<WeaponId, string> = {
   bazooka: 'Bazooka',
   grenade: 'Grenade',
+  cluster: 'Cluster',
   gun: 'Gun',
   uzi: 'Uzi',
+  punch: 'Punch',
+  poke: 'Poke',
+  kamikaze: 'Kamikaze',
   mine: 'Mine',
   dynamite: 'Dynamite',
   drill: 'Drill',
   torch: 'Blowtorch',
+  girder: 'Platform',
   rope: 'Rope',
+  parachute: 'Parachute',
+  hide: 'Hide',
 };
 
 type Rect = { x: number; y: number; size: number };
@@ -70,6 +78,9 @@ interface Tracer {
 }
 
 const ROPE_COLOR = '#c8a165';
+
+/** Weapons used without aiming: no crosshair. */
+const NO_AIM = new Set<WeaponId>(['mine', 'dynamite', 'drill', 'punch', 'poke', 'parachute', 'hide']);
 
 interface FloatText {
   x: number;
@@ -257,6 +268,15 @@ export class Renderer {
           if (!e.hit) this.tracers.push({ x0: e.x0, y0: e.y0, x1: e.x1, y1: e.y1, life: 0, rgb: '200, 161, 101', max: 14 });
           else for (let i = 0; i < 5; i++) this.puff(e.x1, e.y1, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, 15, '#8a5f3c', 2);
           break;
+        case 'punch':
+          this.texts.push({ x: e.x, y: e.y - 16, text: e.poke ? 'poke!' : e.hit ? 'POW!' : 'swish', color: e.hit ? '#ffe17a' : '#ddd', life: 0 });
+          if (e.hit && !e.poke) this.shake = Math.max(this.shake, 5);
+          break;
+        case 'hide': {
+          const s = state.snails[e.snailId];
+          this.texts.push({ x: s.x, y: s.y - 30, text: 'zzz', color: '#bfe8ff', life: 0 });
+          break;
+        }
         case 'knock':
           this.texts.push({ x: e.x, y: e.y - 14, text: 'bonk!', color: '#ffe17a', life: 0 });
           this.shake = Math.max(this.shake, 4);
@@ -329,7 +349,11 @@ export class Renderer {
         const edge = (x > 0 && !d[i - 1]) || (x < t.w - 1 && !d[i + 1]) || (y < t.h - 1 && !d[i + t.w]);
         const n = ((x * 73856093) ^ (y * 19349663)) & 0xff;
         let r: number, g: number, b: number;
-        if (depth < 4) {
+        if (d[i] === 2) {
+          // Placed platform: riveted steel.
+          const rivet = ((x >> 3) + (y >> 2)) % 5 === 0;
+          r = rivet ? 200 : 150; g = rivet ? 205 : 158; b = rivet ? 215 : 170;
+        } else if (depth < 4) {
           r = 92; g = 196; b = 92;
         } else if (depth < 7) {
           r = 58; g = 140; b = 64;
@@ -375,6 +399,7 @@ export class Renderer {
     for (const s of state.snails) this.drawSnail(ctx, state, s);
     for (const o of state.objects) this.drawObject(ctx, o);
     this.drawDigTool(ctx, state);
+    this.drawGear(ctx, state);
     this.drawTracers(ctx);
     this.drawAim(ctx, state);
     this.drawParticles(ctx);
@@ -449,40 +474,44 @@ export class Renderer {
     // Holding a running tool makes the snail tremble.
     const tremble = isActive && state.phase === 'digging' ? 1.6 : 0;
     ctx.save();
-    ctx.translate(s.x + (Math.random() - 0.5) * tremble, s.y + SNAIL_R - 1 + (Math.random() - 0.5) * tremble);
+    const tuck = s.hidden ? 5 : 0;
+    ctx.translate(s.x + (Math.random() - 0.5) * tremble, s.y + SNAIL_R - 1 + tuck + (Math.random() - 0.5) * tremble);
     ctx.scale(f, 1);
-    // Foot / body.
-    ctx.fillStyle = '#d9c9a3';
-    ctx.strokeStyle = '#6e5f45';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(-11, 0);
-    ctx.quadraticCurveTo(-12, -5, -4, -5);
-    ctx.lineTo(7, -5);
-    ctx.quadraticCurveTo(10, -6, 10, -12 + bob);
-    ctx.lineTo(13, -12 + bob);
-    ctx.quadraticCurveTo(14, -2, 11, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    // Eye stalks.
-    ctx.strokeStyle = '#6e5f45';
-    ctx.beginPath();
-    ctx.moveTo(11, -11 + bob);
-    ctx.lineTo(13, -19 + bob);
-    ctx.moveTo(12, -11 + bob);
-    ctx.lineTo(17, -17 + bob);
-    ctx.stroke();
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(13, -20 + bob, 2.2, 0, Math.PI * 2);
-    ctx.arc(17.5, -18 + bob, 2.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#111';
-    ctx.beginPath();
-    ctx.arc(13.6, -20 + bob, 1, 0, Math.PI * 2);
-    ctx.arc(18.1, -18 + bob, 1, 0, Math.PI * 2);
-    ctx.fill();
+    // Tucked into its shell: no body, no eyes.
+    if (!s.hidden) {
+      // Foot / body.
+      ctx.fillStyle = '#d9c9a3';
+      ctx.strokeStyle = '#6e5f45';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(-11, 0);
+      ctx.quadraticCurveTo(-12, -5, -4, -5);
+      ctx.lineTo(7, -5);
+      ctx.quadraticCurveTo(10, -6, 10, -12 + bob);
+      ctx.lineTo(13, -12 + bob);
+      ctx.quadraticCurveTo(14, -2, 11, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // Eye stalks.
+      ctx.strokeStyle = '#6e5f45';
+      ctx.beginPath();
+      ctx.moveTo(11, -11 + bob);
+      ctx.lineTo(13, -19 + bob);
+      ctx.moveTo(12, -11 + bob);
+      ctx.lineTo(17, -17 + bob);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(13, -20 + bob, 2.2, 0, Math.PI * 2);
+      ctx.arc(17.5, -18 + bob, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#111';
+      ctx.beginPath();
+      ctx.arc(13.6, -20 + bob, 1, 0, Math.PI * 2);
+      ctx.arc(18.1, -18 + bob, 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
     // Shell with spiral.
     const g = ctx.createRadialGradient(-3, -12, 2, -2, -10, 10);
     g.addColorStop(0, shellLight);
@@ -529,6 +558,20 @@ export class Renderer {
       case 'shell':
         this.drawProjectile(ctx, o.x, o.y, o.vx, o.vy);
         return;
+      case 'bomblet':
+        ctx.fillStyle = '#2a2a2e';
+        ctx.beginPath();
+        ctx.arc(o.x, o.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+      case 'cluster':
+        ctx.fillStyle = '#7a2a2a';
+        ctx.beginPath();
+        ctx.arc(o.x, o.y - 4, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffcf6b';
+        for (const a of [0, 2.1, 4.2]) ctx.fillRect(o.x + Math.cos(a) * 3 - 1, o.y - 4 + Math.sin(a) * 3 - 1, 2, 2);
+        break;
       case 'grenade':
         ctx.fillStyle = '#3f5a2a';
         ctx.beginPath();
@@ -660,6 +703,54 @@ export class Renderer {
     ctx.fill();
   }
 
+  /** Parachute canopy, kamikaze flames. */
+  private drawGear(ctx: CanvasRenderingContext2D, state: GameState): void {
+    const s = activeSnail(state);
+    if (!s || !s.alive) return;
+    if (state.parachute) {
+      const sway = Math.sin(this.frame * 0.05) * 0.08;
+      ctx.save();
+      ctx.translate(s.x, s.y - 4);
+      ctx.rotate(sway);
+      ctx.strokeStyle = '#eee';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const x of [-20, -7, 7, 20]) {
+        ctx.moveTo(0, 0);
+        ctx.lineTo(x, -34);
+      }
+      ctx.stroke();
+      const colors = [TEAM_COLORS[s.team], '#fff'];
+      for (let i = 0; i < 4; i++) {
+        ctx.fillStyle = colors[i % 2];
+        ctx.beginPath();
+        ctx.moveTo(-22 + i * 11, -34);
+        ctx.quadraticCurveTo(-16.5 + i * 11, -50 + Math.abs(i - 1.5) * 4, -11 + i * 11, -34);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (state.phase === 'kamikaze' && state.kamikaze) {
+      const k = state.kamikaze;
+      for (let i = 0; i < 3; i++) {
+        this.puff(s.x - k.dx * 8, s.y - k.dy * 8, -k.dx * 2 + (Math.random() - 0.5) * 2, -k.dy * 2 + (Math.random() - 0.5) * 2, 14, i ? '#ff7a1a' : '#ffd166', 3, 0, true);
+      }
+    }
+  }
+
+  /** Where a platform would go, drawn as an outline while aiming. */
+  private drawGirderGhost(ctx: CanvasRenderingContext2D, s: Snail): void {
+    const g = girderSpot(s);
+    ctx.save();
+    ctx.translate(g.x, g.y);
+    ctx.rotate(Math.atan2(g.uy, g.ux));
+    ctx.strokeStyle = '#ffffffaa';
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(-GIRDER_LEN / 2, -4, GIRDER_LEN, 8);
+    ctx.restore();
+  }
+
   private drawAim(ctx: CanvasRenderingContext2D, state: GameState): void {
     if (state.phase !== 'aiming' && state.phase !== 'firing') return;
     if (state.rope || state.hook) return;
@@ -667,7 +758,11 @@ export class Renderer {
     if (!s || !s.alive) return;
     const weapon = state.teams[state.activeTeam].weapon;
     // Mines, dynamite and the drill need no aim.
-    if (weapon === 'mine' || weapon === 'dynamite' || weapon === 'drill') return;
+    if (NO_AIM.has(weapon)) return;
+    if (weapon === 'girder') {
+      this.drawGirderGhost(ctx, s);
+      return;
+    }
     const [dx, dy] = aimVector(s);
     const cx = s.x + dx * 46;
     const cy = s.y + dy * 46;
@@ -693,6 +788,19 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(12, 0, 4, 0, Math.PI * 2);
       ctx.fill();
+    } else if (weapon === 'cluster') {
+      ctx.fillStyle = '#7a2a2a';
+      ctx.beginPath();
+      ctx.arc(12, 0, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (weapon === 'kamikaze') {
+      // Red headband ribbon trailing back.
+      ctx.strokeStyle = '#e04040';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-6, -10);
+      ctx.quadraticCurveTo(-12, -14, -16, -10);
+      ctx.stroke();
     } else if (weapon === 'rope') {
       // Coiled rope with the hook ready to throw.
       ctx.strokeStyle = ROPE_COLOR;
@@ -899,17 +1007,36 @@ export class Renderer {
   private menuOrigin(settled = false): { x: number; y: number } {
     const k = this.uiScale;
     const box = this.weaponBox();
-    const hidden = settled ? 0 : (1 - this.slide) * (MENU_W * k + HUD_MARGIN);
-    return { x: VIEW_W - HUD_MARGIN - MENU_W * k + hidden, y: box.y + box.size + TILE_GAP * k };
+    const w = this.menuLayout().w;
+    const hidden = settled ? 0 : (1 - this.slide) * (w * k + HUD_MARGIN);
+    return { x: VIEW_W - HUD_MARGIN - w * k + hidden, y: box.y + box.size + TILE_GAP * k };
+  }
+
+  /** Drawer grid size (unscaled px): as tall as fits above the bottom HUD, then wider. */
+  private menuLayout(): { cols: number; rows: number; w: number; h: number } {
+    const k = this.uiScale;
+    const box = this.weaponBox();
+    const top = box.y + box.size + TILE_GAP * k;
+    const room = (VIEW_H - top) / k - MENU_HEAD - MENU_PAD - MENU_FOOT;
+    const fitRows = Math.max(1, Math.floor((room + TILE_GAP) / (TILE + TILE_GAP)));
+    const cols = Math.max(MENU_MIN_COLS, Math.ceil(WEAPONS.length / fitRows));
+    const rows = Math.ceil(WEAPONS.length / cols);
+    return {
+      cols,
+      rows,
+      w: cols * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD * 2,
+      h: MENU_HEAD + rows * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD,
+    };
   }
 
   /** Weapon tile i (0-based) in the drawer, in canvas pixels. */
   private menuTile(i: number, settled = false): Rect {
     const k = this.uiScale;
     const o = this.menuOrigin(settled);
+    const { cols } = this.menuLayout();
     return {
-      x: o.x + (MENU_PAD + (i % MENU_COLS) * (TILE + TILE_GAP)) * k,
-      y: o.y + (MENU_HEAD + Math.floor(i / MENU_COLS) * (TILE + TILE_GAP)) * k,
+      x: o.x + (MENU_PAD + (i % cols) * (TILE + TILE_GAP)) * k,
+      y: o.y + (MENU_HEAD + Math.floor(i / cols) * (TILE + TILE_GAP)) * k,
       size: TILE * k,
     };
   }
@@ -940,8 +1067,7 @@ export class Renderer {
     const k = this.uiScale;
     const box = this.weaponBox();
     const o = this.menuOrigin(true);
-    const rows = Math.ceil(WEAPONS.length / MENU_COLS);
-    const panelH = (MENU_HEAD + rows * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD) * k;
+    const panelH = this.menuLayout().h * k;
     const over =
       x !== null &&
       (x >= VIEW_W - EDGE_HOVER ||
@@ -1026,10 +1152,9 @@ export class Renderer {
     const current = state.teams[state.activeTeam]?.weapon;
     const k = this.uiScale;
     const o = this.menuOrigin();
-    const rows = Math.ceil(WEAPONS.length / MENU_COLS);
-    const h = MENU_HEAD + rows * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD;
+    const { w, h } = this.menuLayout();
     ctx.fillStyle = '#000d';
-    roundRect(ctx, o.x, o.y, MENU_W * k, h * k, 12 * k);
+    roundRect(ctx, o.x, o.y, w * k, h * k, 12 * k);
     ctx.fill();
     ctx.font = `bold ${Math.round(12 * k)}px Verdana, Arial, Helvetica, sans-serif`;
     ctx.textAlign = 'left';
@@ -1276,6 +1401,113 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.moveTo(6, -3);
       ctx.quadraticCurveTo(12, -1, 6, 1);
       ctx.fill();
+      break;
+    case 'cluster':
+      // Red bomb with little bomblets around it.
+      ctx.fillStyle = '#a33a3a';
+      ctx.beginPath();
+      ctx.arc(-2, 3, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#9aa58a';
+      ctx.fillRect(-4, -9, 5, 4);
+      ctx.fillStyle = '#ffcf6b';
+      for (const [x, y] of [[10, -8], [12, 2], [7, 11]]) {
+        ctx.beginPath();
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    case 'punch':
+      // Red boxing glove.
+      ctx.fillStyle = '#d63a3a';
+      roundRect(ctx, -6, -9, 18, 16, 7);
+      ctx.fill();
+      ctx.fillStyle = '#b02a2a';
+      roundRect(ctx, -2, -12, 9, 7, 3.5);
+      ctx.fill();
+      ctx.fillStyle = '#f4e3c1';
+      ctx.fillRect(-13, -6, 7, 11);
+      break;
+    case 'poke':
+      // Pointing finger.
+      ctx.fillStyle = '#f0c9a0';
+      roundRect(ctx, -12, -5, 14, 12, 4);
+      ctx.fill();
+      roundRect(ctx, 0, -4, 14, 5, 2.5);
+      ctx.fill();
+      ctx.strokeStyle = '#b08060';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(-6, 1);
+      ctx.lineTo(1, 1);
+      ctx.moveTo(-6, 4);
+      ctx.lineTo(1, 4);
+      ctx.stroke();
+      break;
+    case 'kamikaze':
+      // Headband with a flame.
+      ctx.fillStyle = '#ff9f1c';
+      ctx.beginPath();
+      ctx.moveTo(-6, 10);
+      ctx.quadraticCurveTo(-12, -4, 0, -14);
+      ctx.quadraticCurveTo(-2, -2, 6, -6);
+      ctx.quadraticCurveTo(12, 6, 6, 10);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(-13, 8, 26, 6);
+      ctx.fillStyle = '#e04040';
+      ctx.beginPath();
+      ctx.arc(0, 11, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'girder':
+      // Steel beam with rivets.
+      ctx.rotate(-0.35);
+      ctx.fillStyle = '#9aa0aa';
+      ctx.fillRect(-15, -4, 30, 8);
+      ctx.fillStyle = '#d0d4dc';
+      for (const x of [-11, -3, 5, 12]) {
+        ctx.beginPath();
+        ctx.arc(x, 0, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    case 'parachute':
+      ctx.fillStyle = '#5ec8ff';
+      ctx.beginPath();
+      ctx.moveTo(-14, -2);
+      ctx.quadraticCurveTo(0, -20, 14, -2);
+      ctx.fill();
+      ctx.strokeStyle = '#ddd';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      for (const x of [-14, -5, 5, 14]) {
+        ctx.moveTo(x, -2);
+        ctx.lineTo(0, 11);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#ffb36b';
+      ctx.beginPath();
+      ctx.arc(0, 12, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'hide':
+      // A shell with "zzz".
+      ctx.fillStyle = '#ffb36b';
+      ctx.beginPath();
+      ctx.arc(-3, 4, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#7a3a10';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(-3, 4, 6, 0, Math.PI * 1.5);
+      ctx.arc(-3, 4, 2.5, Math.PI * 1.5, Math.PI * 3);
+      ctx.stroke();
+      ctx.fillStyle = '#bfe8ff';
+      ctx.font = 'bold 9px Verdana, Arial, Helvetica, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('z', 6, -6);
+      ctx.fillText('z', 10, -12);
       break;
     case 'rope':
       // Coil of rope with a grappling hook.

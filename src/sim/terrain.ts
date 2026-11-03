@@ -3,7 +3,7 @@ import { Rng, dsin } from './math';
 export interface Terrain {
   w: number;
   h: number;
-  /** 1 = solid, 0 = air. Row-major. */
+  /** 0 = air, 1 = ground, 2 = a placed platform (solid too). Row-major. */
   data: Uint8Array;
   /** Bumped on every modification so renderers can cache. */
   version: number;
@@ -13,7 +13,7 @@ export function isSolid(t: Terrain, x: number, y: number): boolean {
   const ix = Math.floor(x);
   const iy = Math.floor(y);
   if (ix < 0 || iy < 0 || ix >= t.w || iy >= t.h) return false;
-  return t.data[iy * t.w + ix] === 1;
+  return t.data[iy * t.w + ix] !== 0;
 }
 
 export function carveCircle(t: Terrain, cx: number, cy: number, r: number): void {
@@ -27,6 +27,36 @@ export function carveCircle(t: Terrain, cx: number, cy: number, r: number): void
     for (let x = x0; x <= x1; x++) {
       const dx = x + 0.5 - cx;
       if (dx * dx + dy * dy <= r2) t.data[y * t.w + x] = 0;
+    }
+  }
+  t.version++;
+}
+
+/**
+ * Lays a solid bar (a platform) centred on (cx, cy) along the unit direction (ux, uy).
+ * Pixels for which `keepClear` is true stay empty, so it never traps a snail.
+ */
+export function fillBar(
+  t: Terrain,
+  cx: number,
+  cy: number,
+  ux: number,
+  uy: number,
+  len: number,
+  thick: number,
+  keepClear: (x: number, y: number) => boolean,
+): void {
+  const reach = Math.ceil(len / 2 + thick);
+  for (let y = Math.floor(cy - reach); y <= cy + reach; y++) {
+    for (let x = Math.floor(cx - reach); x <= cx + reach; x++) {
+      if (x < 0 || y < 0 || x >= t.w || y >= t.h) continue;
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      const along = dx * ux + dy * uy;
+      const across = -dx * uy + dy * ux;
+      if (Math.abs(along) > len / 2 || Math.abs(across) > thick / 2) continue;
+      if (keepClear(x + 0.5, y + 0.5)) continue;
+      t.data[y * t.w + x] = 2;
     }
   }
   t.version++;
