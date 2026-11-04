@@ -2,8 +2,11 @@ import { Bot } from './ai/bot';
 import { Sound } from './audio/sound';
 import { KeyboardInput } from './input/keyboard';
 import { addTouchControls } from './input/touch';
+import { showLobby } from './lobby/lobby';
+import { ServerMatchStore } from './net/server-store';
 import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store';
-import { Renderer, TEAM_COLORS, VIEW_H, VIEW_W } from './render/renderer';
+import { teamColor } from './render/palette';
+import { Renderer, VIEW_H, VIEW_W } from './render/renderer';
 import { DEFAULT_CONFIG, TICK_RATE, createGame } from './sim/game';
 import { TurnPlayback, TurnRecorder, applyTurn, rebuild, type MatchRecord, type TurnRecord } from './sim/turnlog';
 import type { GameConfig, GameState } from './sim/types';
@@ -13,13 +16,15 @@ const num = (k: string): number | undefined => (params.has(k) ? Number(params.ge
 /** ?bots=1 makes team 1 a bot, ?bots=0,1 makes both bots (attract/demo mode). */
 const botTeams = new Set((params.get('bots') ?? '').split(',').filter(Boolean).map(Number));
 /**
- * ?team=N plays only team N against a match kept in localStorage (?match=id picks which),
- * so a second tab with the other team is the opponent. Without it, every team is local (hot-seat).
+ * How this page plays. ?room=<id> is an online room (lobby first, then the match on the server).
+ * ?team=N plays only team N against a match kept in localStorage (?match=id picks which), so a
+ * second tab with the other team is the opponent. Without either, every team is local (hot-seat).
  */
-const myTeam = num('team');
-const asyncPlay = myTeam !== undefined;
-const matchId = params.get('match') ?? 'default';
-const store: MatchStore = asyncPlay ? new LocalMatchStore() : new MemoryMatchStore();
+let myTeam = num('team');
+let asyncPlay = myTeam !== undefined;
+let online = false;
+let matchId = params.get('match') ?? 'default';
+let store: MatchStore = asyncPlay ? new LocalMatchStore() : new MemoryMatchStore();
 const isLocal = (team: number): boolean => !asyncPlay || team === myTeam || botTeams.has(team);
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -28,7 +33,6 @@ const keyboard = new KeyboardInput();
 /** Phones and tablets get on-screen buttons; ?touch=1 forces them on a desktop. */
 const touch = params.get('touch') === '1' || matchMedia('(pointer: coarse)').matches;
 renderer.touch = touch;
-if (touch) addTouchControls(keyboard);
 
 // Grow the HUD when the canvas is drawn small so its text stays readable.
 function fitUi(): void {
@@ -119,11 +123,11 @@ function configFromUrl(seed: number): Partial<GameConfig> {
 }
 
 // How far this viewer has watched, so a reload does not replay the same moves again.
-const seenKey = `snails.seen.${matchId}.${myTeam}`;
+const seenKey = () => `snails.seen.${matchId}.${myTeam}`;
 function getSeen(m: MatchRecord): number {
   if (!asyncPlay) return m.turns.length;
   try {
-    const saved = JSON.parse(localStorage.getItem(seenKey) ?? 'null') as { seed: number; n: number } | null;
+    const saved = JSON.parse(localStorage.getItem(seenKey()) ?? 'null') as { seed: number; n: number } | null;
     if (saved && saved.seed === m.config.seed && saved.n <= m.turns.length) return saved.n;
   } catch {
     // Fall through to the default.
@@ -137,7 +141,7 @@ function markApplied(): void {
   applied++;
   if (!asyncPlay) return;
   try {
-    localStorage.setItem(seenKey, JSON.stringify({ seed: match.config.seed, n: applied }));
+    localStorage.setItem(seenKey(), JSON.stringify({ seed: match.config.seed, n: applied }));
   } catch {
     // Watching again after a reload is harmless.
   }
@@ -242,32 +246,33 @@ function watchLastTurn(): void {
   playQueue([match.turns[applied - 1]], resume);
 }
 
-store.watch(matchId, (m) => {
-  if (!m) return;
-  const known = match.turns.length;
-  const samePrefix =
-    m.config.seed === match.config.seed &&
-    m.turns.length >= known &&
-    (known === 0 || m.turns[known - 1].hash === match.turns[known - 1].hash);
-  const midTurn = mode.kind === 'live' || (mode.kind === 'replay' && mode.resume?.mode.kind === 'live');
-  if (!samePrefix || midTurn) {
-    // A new match, or a move we did not expect while it is our turn: start over from the store.
-    open(m);
-    return;
-  }
-  const fresh = m.turns.slice(known);
-  if (fresh.length === 0) return;
-  match = m;
-  if (mode.kind === 'replay' && !mode.resume) {
-    mode.queue.push(...fresh);
-  } else {
-    if (mode.kind === 'replay' && mode.resume) {
-      state = mode.resume.state;
-      renderer.reset();
+const watchStore = () =>
+  store.watch(matchId, (m) => {
+    if (!m) return;
+    const known = match.turns.length;
+    const samePrefix =
+      m.config.seed === match.config.seed &&
+      m.turns.length >= known &&
+      (known === 0 || m.turns[known - 1].hash === match.turns[known - 1].hash);
+    const midTurn = mode.kind === 'live' || (mode.kind === 'replay' && mode.resume?.mode.kind === 'live');
+    if (!samePrefix || midTurn) {
+      // A new match, or a move we did not expect while it is our turn: start over from the store.
+      open(m);
+      return;
     }
-    playQueue(fresh, null);
-  }
-});
+    const fresh = m.turns.slice(known);
+    if (fresh.length === 0) return;
+    match = m;
+    if (mode.kind === 'replay' && !mode.resume) {
+      mode.queue.push(...fresh);
+    } else {
+      if (mode.kind === 'replay' && mode.resume) {
+        state = mode.resume.state;
+        renderer.reset();
+      }
+      playQueue(fresh, null);
+    }
+  });
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) document.title = baseTitle;
@@ -278,8 +283,13 @@ const SOUND_LABELS = { all: 'Music and sound on', sfx: 'Music off, sound on', of
 keyboard.bind('KeyN', () => renderer.notice(SOUND_LABELS[sound.cycle()]));
 
 keyboard.bind('KeyR', () => {
-  // In async play a new map would end the match for the other player too.
+  // In async play a new map would end the match for the other player too; online, only the
+  // lobby makes matches.
+  if (online) return;
   if (!asyncPlay || state.phase === 'gameover') void newMatch(Math.floor(Math.random() * 1e9));
+});
+keyboard.bind('KeyO', () => {
+  if (!online) location.href = '/?online';
 });
 keyboard.bind('KeyP', watchLastTurn);
 keyboard.bind('KeyM', () => renderer.toggleOverview());
@@ -300,12 +310,12 @@ function statusLine(): Renderer['status'] {
     case 'replay': {
       const t = mode.playback.record;
       const what = mode.resume ? `Replay of turn ${t.turn}` : `${teamName(t.team)}'s move (turn ${t.turn})`;
-      return { text: `${what}  ·  ${touch ? 'tap ⏭' : 'Esc'} to skip`, color: TEAM_COLORS[t.team] };
+      return { text: `${what}  ·  ${touch ? 'tap ⏭' : 'Esc'} to skip`, color: teamColor(state, t.team) };
     }
     case 'waiting':
       if (mode.error) return { text: `Replay failed: ${mode.error}`, color: '#ff6b6b' };
       if (state.phase === 'gameover') return null;
-      return { text: `Waiting for ${teamName(state.activeTeam)} to move…`, color: TEAM_COLORS[state.activeTeam] };
+      return { text: `Waiting for ${teamName(state.activeTeam)} to move…`, color: teamColor(state, state.activeTeam) };
   }
 }
 
@@ -367,9 +377,29 @@ function frame(now: number): void {
   sound,
 };
 
-void (async () => {
+async function startGame(): Promise<void> {
+  document.body.classList.add('playing');
+  canvas.hidden = false;
+  if (touch) addTouchControls(keyboard);
+  fitUi();
+  watchStore();
   const saved = asyncPlay ? await store.load(matchId) : null;
   if (saved) open(saved);
   else await newMatch();
   requestAnimationFrame(frame);
-})();
+}
+
+const roomId = params.get('room');
+if (roomId || params.has('online')) {
+  canvas.hidden = true;
+  showLobby(document.getElementById('lobby')!, roomId, (seat) => {
+    online = true;
+    asyncPlay = true;
+    myTeam = seat.teamIndex;
+    matchId = seat.roomId;
+    store = new ServerMatchStore(seat.roomId, seat.token);
+    void startGame();
+  });
+} else {
+  void startGame();
+}

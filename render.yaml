@@ -1,0 +1,19 @@
+# Free Render web service for the online lobby. Data lives in Postgres (DATABASE_URL);
+# the free instance sleeps after ~15 min idle and its disk is wiped on restart.
+services:
+  - type: web
+    name: snails
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false

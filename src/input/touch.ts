@@ -42,6 +42,7 @@ const ACTIONS: [string, string, string][] = [
   ['Escape', '⏭', 'Skip replay'],
   ['KeyR', '⟳', 'New map'],
   ['KeyM', '🗺', 'Whole map'],
+  ['KeyO', '🌐', 'Play online'],
   ['KeyN', '♪', 'Music and sound'],
 ];
 

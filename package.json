@@ -5,15 +5,28 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc --noEmit -p server && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "record-demo": "node scripts/record-demo.mjs"
+    "record-demo": "node scripts/record-demo.mjs",
+    "server": "tsx watch server/index.ts",
+    "start": "node --import tsx server/index.ts"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2",
     "puppeteer-core": "^23.11.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.8",
+    "@fastify/websocket": "^11.3.6",
+    "fastify": "^5.12.8",
+    "pg": "^8.23.1",
+    "tsx": "^4.23.15"
   }
 }

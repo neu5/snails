@@ -77,6 +77,53 @@ whole map (🗺) and full screen. Drag the map with one finger, pinch to zoom. `
 URL options: `?seed=123` (fixed map), `?hp=60`, `?snails=2` (per team, 1-4),
 `?turn=20` (seconds), `?bots=1` (team 2 is a bot) or `?bots=0,1` (bot vs bot).
 
+## Online play
+
+Run the lobby server next to Vite:
+
+```bash
+npm run server
+```
+
+```bash
+npm run dev
+```
+
+Open http://localhost:5173/?online (or press O / tap 🌐 in the game) and create a room.
+
+- **Room link:** copy it and send it to the other players. Up to 4 teams can join.
+- **Your team:** each player sets a team name, one of 8 colors (colors already taken are greyed
+  out), and a name for every snail.
+- **Host settings:** the host picks the snails per team and the time per turn, then starts the
+  game once 2–4 teams are in.
+- **Email (optional):** a player can add an email to hear when it is their move. Nothing is sent
+  to it until its owner clicks the confirm link the server emails them; the link works once, for
+  24 hours.
+- **Taking turns:** the server replays every turn it gets (`applyTurn`) and refuses turns from the
+  wrong player or with a wrong state hash. It then tells everyone with the room open, and emails
+  the next team if its address is confirmed.
+
+Without `DATABASE_URL` the server uses an in-memory Postgres (PGlite), so rooms are gone on
+restart. Without `RESEND_API_KEY`, emails are printed in the server console and listed at
+http://localhost:5173/api/dev/outbox. To be two players in one browser, add `&seat=b` to the
+second tab's URL.
+
+### Deploying on Render (free)
+
+`render.yaml` describes a free web service. Set these environment variables:
+
+- `DATABASE_URL`: any Postgres. Render's free Postgres is deleted after a while, so a free
+  [Neon](https://neon.tech) database is the better fit.
+- `PUBLIC_URL`: e.g. `https://snails.onrender.com`; links in emails point here.
+- `RESEND_API_KEY` and `MAIL_FROM`: from [Resend](https://resend.com), with a verified sender domain.
+
+Things to know about the free plan:
+
+- **It sleeps.** After about 15 minutes with no visitors the service goes to sleep, and the next
+  visit (or confirm-link click) takes about a minute to wake it. Open rooms reconnect on their
+  own. Async play is fine with this: the "your move" email is what brings players back.
+- **Its disk is wiped** on every deploy and restart, so all data lives in Postgres.
+
 ## Async play (local prototype)
 
 Open two tabs on the same match, one per team:
@@ -92,9 +139,8 @@ encoded inputs plus the state hash after it) into `localStorage`; the other tab 
 reloading a tab replays the moves made since that player last watched. Add `&bots=N` to let a
 bot play team N inside that tab (e.g. `?team=0&bots=0` and `?team=1&bots=1` for bot vs bot).
 
-`MatchStore` (`src/net/store.ts`) is the seam for a real backend: swap `LocalMatchStore` for
-one that talks to a server, which should run `applyTurn` on each submitted turn to reject
-desyncs and cheats.
+`MatchStore` (`src/net/store.ts`) is the seam between the game and where matches live; online
+rooms use `ServerMatchStore` (`src/net/server-store.ts`).
 
 ## Architecture
 
@@ -104,7 +150,9 @@ src/sim/     deterministic simulation (no DOM, no Math.random, no wall-clock tim
   terrain.ts bitmask terrain, generation, carving
   math.ts    seeded RNG + engine-independent sin/cos
   turnlog.ts TurnRecorder / TurnPlayback / applyTurn / rebuild: per-turn input logs
-src/net/     MatchStore: memory (hot-seat) and localStorage (async between tabs)
+src/net/     MatchStore: memory (hot-seat), localStorage (async between tabs), server (online)
+src/lobby/   online lobby page (DOM): rooms, teams, colors, snail names, email
+server/      Fastify + Postgres lobby server: rooms, verified emails, turn checking, WebSocket
 src/input/   keyboard -> InputFrame
 src/ai/      bot that produces InputFrames from GameState
 src/render/  Canvas 2D renderer; reads state, consumes events for particles
