@@ -1,5 +1,6 @@
 import { GIRDER_LEN, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
+import { teamColor, teamPalette } from './palette';
 import { WEAPONS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
 /** Canvas size; the camera shows part of the (bigger) map in it, or all of it zoomed out. */
@@ -45,11 +46,6 @@ const WEAPON_NAMES: Record<WeaponId, string> = {
 
 type Rect = { x: number; y: number; size: number };
 
-export const TEAM_COLORS = ['#ff8a3d', '#5ec8ff'];
-const TEAM_SHELL = [
-  ['#ffb36b', '#c4571c'],
-  ['#9fe0ff', '#2a7fb8'],
-];
 
 interface Particle {
   x: number;
@@ -241,7 +237,7 @@ export class Renderer {
           break;
         case 'damage': {
           const s = state.snails[e.snailId];
-          this.texts.push({ x: s.x, y: s.y - 30, text: `-${e.amount}`, color: TEAM_COLORS[s.team], life: 0 });
+          this.texts.push({ x: s.x, y: s.y - 30, text: `-${e.amount}`, color: teamColor(state, s.team), life: 0 });
           break;
         }
         case 'death': {
@@ -330,7 +326,7 @@ export class Renderer {
           if (!this.overview) this.camera.manual = false;
           this.lookFrom = null;
           const s = state.snails[e.snailId];
-          this.banner = { text: `${state.teams[e.team].name}: ${s.name}'s turn`, color: TEAM_COLORS[e.team], life: 0 };
+          this.banner = { text: `${state.teams[e.team].name}: ${s.name}'s turn`, color: teamColor(state, e.team), life: 0 };
           break;
         }
         default:
@@ -473,7 +469,7 @@ export class Renderer {
       return;
     }
     const isActive = state.activeSnailId === s.id && state.phase !== 'gameover';
-    const [shellLight, shellDark] = TEAM_SHELL[s.team];
+    const { light: shellLight, dark: shellDark } = teamPalette(state, s.team);
     const f = s.facing;
     const bob = isActive ? Math.sin(this.frame * 0.15) * 0.8 : 0;
     // Holding a running tool makes the snail tremble.
@@ -545,7 +541,7 @@ export class Renderer {
     ctx.lineWidth = 3;
     ctx.strokeStyle = '#000a';
     ctx.strokeText(label, s.x, s.y - 26);
-    ctx.fillStyle = TEAM_COLORS[s.team];
+    ctx.fillStyle = teamColor(state, s.team);
     ctx.fillText(label, s.x, s.y - 26);
     if (isActive && state.phase === 'aiming') {
       const y = s.y - 44 + Math.sin(this.frame * 0.1) * 3;
@@ -725,7 +721,7 @@ export class Renderer {
         ctx.lineTo(x, -34);
       }
       ctx.stroke();
-      const colors = [TEAM_COLORS[s.team], '#fff'];
+      const colors = [teamColor(state, s.team), '#fff'];
       for (let i = 0; i < 4; i++) {
         ctx.fillStyle = colors[i % 2];
         ctx.beginPath();
@@ -1126,7 +1122,7 @@ export class Renderer {
     ctx.fillStyle = '#000c';
     roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
     ctx.fill();
-    ctx.strokeStyle = TEAM_COLORS[state.activeTeam];
+    ctx.strokeStyle = teamColor(state, state.activeTeam);
     ctx.lineWidth = 2.5 * k;
     ctx.stroke();
     drawWeaponIcon(ctx, current, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
@@ -1172,7 +1168,7 @@ export class Renderer {
       roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
       ctx.fill();
       if (on) {
-        ctx.strokeStyle = TEAM_COLORS[state.activeTeam];
+        ctx.strokeStyle = teamColor(state, state.activeTeam);
         ctx.lineWidth = 2.5 * k;
         ctx.stroke();
       }
@@ -1197,7 +1193,7 @@ export class Renderer {
         ctx.fillStyle = '#ffd166';
         ctx.fillText(String(Math.ceil(state.retreatTicks / TICK_RATE)), 37, 37);
       } else {
-        ctx.fillStyle = state.phase === 'aiming' ? (secs <= 5 ? '#ff5555' : TEAM_COLORS[state.activeTeam]) : '#888';
+        ctx.fillStyle = state.phase === 'aiming' ? (secs <= 5 ? '#ff5555' : teamColor(state, state.activeTeam)) : '#888';
         ctx.fillText(state.phase === 'aiming' ? String(secs) : '--', 37, 37);
       }
 
@@ -1240,11 +1236,12 @@ export class Renderer {
       const maxTotal = state.config.startHp * state.config.snailsPerTeam;
       state.teams.forEach((t, i) => {
         const hp = state.snails.filter((s) => s.team === t.id && s.alive).reduce((a, s) => a + Math.max(0, s.hp), 0);
-        const y = -42 + i * 22;
+        // One bar per team (2-4), stacked up from the bottom.
+        const y = -22 * state.teams.length + 2 + i * 22;
         ctx.fillStyle = '#000a';
         roundRect(ctx, -160, y, 320, 18, 6);
         ctx.fill();
-        ctx.fillStyle = TEAM_COLORS[i];
+        ctx.fillStyle = teamColor(state, i);
         roundRect(ctx, -158, y + 2, 316 * Math.min(1, hp / maxTotal), 14, 5);
         ctx.fill();
         ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
@@ -1291,7 +1288,7 @@ export class Renderer {
         ctx.textAlign = 'center';
         ctx.font = 'bold 56px Verdana, Arial, Helvetica, sans-serif';
         const won = state.winner !== null && state.winner >= 0;
-        ctx.fillStyle = won ? TEAM_COLORS[state.winner!] : '#fff';
+        ctx.fillStyle = won ? teamColor(state, state.winner!) : '#fff';
         ctx.fillText(won ? `${state.teams[state.winner!].name} win!` : 'Draw!', 0, -10);
         ctx.font = '20px Verdana, Arial, Helvetica, sans-serif';
         ctx.fillStyle = '#ddd';

@@ -143,6 +143,8 @@ export interface Snail {
 export interface Team {
   id: number;
   name: string;
+  /** Palette index. */
+  color: number;
   /** Index into this team's snail list for the next turn. */
   nextIndex: number;
   /** Selected weapon; kept between this team's turns. */
@@ -167,11 +169,27 @@ export interface Projectile {
   resting: boolean;
 }
 
+export const MAX_TEAMS = 4;
+export const MAX_SNAILS_PER_TEAM = 4;
+/** Teams pick one of this many colors (indexes into the renderer's palette). */
+export const TEAM_COLOR_COUNT = 8;
+
+/** A team as set up in the lobby. */
+export interface TeamSetup {
+  name: string;
+  /** 0..TEAM_COLOR_COUNT-1 */
+  color: number;
+  /** One per snail; snailsPerTeam long. */
+  snailNames: string[];
+}
+
 export interface GameConfig {
   seed: number;
   snailsPerTeam: number;
   startHp: number;
   turnSeconds: number;
+  /** 2-4 teams; when missing, the two default teams play. */
+  teams?: TeamSetup[];
 }
 
 export interface GameState {

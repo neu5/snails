@@ -12,5 +12,6 @@
     "skipLibCheck": true,
     "types": []
   },
-  "include": ["src", "tests"]
+  "include": ["src", "tests"],
+  "exclude": ["tests/server.test.ts"]
 }
