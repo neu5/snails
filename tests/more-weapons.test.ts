@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GRENADE_FUSE, SNAIL_R, activeSnail, createGame, girderSpot, step } from '../src/sim/game';
 import { isSolid } from '../src/sim/terrain';
-import { EMPTY_INPUT, WEAPONS, type GameState, type InputFrame, type SimEvent, type WeaponId } from '../src/sim/types';
+import { EMPTY_INPUT, WEAPONS, WEAPON_ROWS, type GameState, type InputFrame, type SimEvent, type WeaponId } from '../src/sim/types';
 
 function ready(seed = 9): GameState {
   const state = createGame({ seed });
@@ -161,5 +161,12 @@ describe('more weapons', () => {
     for (let i = 0; i < 2000 && state.turnNumber === turn; i++) step(state, EMPTY_INPUT);
     expect(state.turnNumber).toBe(turn + 1);
     expect(me.hidden).toBe(true);
+  });
+});
+
+describe('weapon menu', () => {
+  it('lists every weapon once, at most three in a row', () => {
+    expect(WEAPON_ROWS.flat().slice().sort()).toEqual([...WEAPONS].sort());
+    expect(Math.max(...WEAPON_ROWS.map((r) => r.length))).toBeLessThanOrEqual(3);
   });
 });
