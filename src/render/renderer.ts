@@ -1,6 +1,6 @@
 import { GIRDER_LEN, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
-import { WEAPONS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
+import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
 /** Canvas size; the camera shows part of the (bigger) map in it, or all of it zoomed out. */
 export const VIEW_W = 1280;
@@ -13,8 +13,8 @@ const HUD_MARGIN = 16;
 const WIND_H = 40;
 const TILE = 44;
 const TILE_GAP = 6;
-/** The weapon drawer is a grid at least this many wide; it widens when rows run out of room. */
-const MENU_MIN_COLS = 3;
+/** Weapons per row in the drawer, which shows WEAPON_ROWS when they all fit in its height. */
+const MENU_ROW_LEN = 3;
 /** Space kept free under the drawer (health bars, touch buttons), unscaled px. */
 const MENU_FOOT = 110;
 /** Pointer this close to the right edge (canvas px) slides the drawer out on a laptop. */
@@ -1017,16 +1017,21 @@ export class Renderer {
     return { x: VIEW_W - HUD_MARGIN - w * k + hidden, y: box.y + box.size + TILE_GAP * k };
   }
 
-  /** Drawer grid size (unscaled px): as tall as fits above the bottom HUD, then wider. */
-  private menuLayout(): { cols: number; rows: number; w: number; h: number } {
+  /**
+   * Drawer grid size (unscaled px). Short screens cannot fit one row per kind of weapon above
+   * the bottom HUD, so there the same order runs on through a wider, shorter grid.
+   */
+  private menuLayout(): { grouped: boolean; cols: number; rows: number; w: number; h: number } {
     const k = this.uiScale;
     const box = this.weaponBox();
     const top = box.y + box.size + TILE_GAP * k;
     const room = (VIEW_H - top) / k - MENU_HEAD - MENU_PAD - MENU_FOOT;
     const fitRows = Math.max(1, Math.floor((room + TILE_GAP) / (TILE + TILE_GAP)));
-    const cols = Math.max(MENU_MIN_COLS, Math.ceil(WEAPONS.length / fitRows));
-    const rows = Math.ceil(WEAPONS.length / cols);
+    const grouped = fitRows >= WEAPON_ROWS.length;
+    const cols = grouped ? MENU_ROW_LEN : Math.max(MENU_ROW_LEN, Math.ceil(WEAPONS.length / fitRows));
+    const rows = grouped ? WEAPON_ROWS.length : Math.ceil(WEAPONS.length / cols);
     return {
+      grouped,
       cols,
       rows,
       w: cols * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD * 2,
@@ -1034,14 +1039,17 @@ export class Renderer {
     };
   }
 
-  /** Weapon tile i (0-based) in the drawer, in canvas pixels. */
-  private menuTile(i: number, settled = false): Rect {
+  /** A weapon's tile in the drawer, in canvas pixels. */
+  private menuTile(id: WeaponId, settled = false): Rect {
     const k = this.uiScale;
     const o = this.menuOrigin(settled);
-    const { cols } = this.menuLayout();
+    const { grouped, cols } = this.menuLayout();
+    const i = WEAPON_ROWS.flat().indexOf(id);
+    const row = grouped ? WEAPON_ROWS.findIndex((r) => r.includes(id)) : Math.floor(i / cols);
+    const col = grouped ? WEAPON_ROWS[row].indexOf(id) : i % cols;
     return {
-      x: o.x + (MENU_PAD + (i % cols) * (TILE + TILE_GAP)) * k,
-      y: o.y + (MENU_HEAD + Math.floor(i / cols) * (TILE + TILE_GAP)) * k,
+      x: o.x + (MENU_PAD + col * (TILE + TILE_GAP)) * k,
+      y: o.y + (MENU_HEAD + row * (TILE + TILE_GAP)) * k,
       size: TILE * k,
     };
   }
@@ -1100,7 +1108,7 @@ export class Renderer {
     if (!this.menuOpen) return { used: false, weapon: 0 };
     this.menuOpen = false;
     this.hoverOpen = false;
-    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(i, true))) return { used: true, weapon: i + 1 };
+    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(WEAPONS[i], true))) return { used: true, weapon: i + 1 };
     // A tap anywhere else just closes the menu.
     return { used: true, weapon: 0 };
   }
@@ -1165,8 +1173,8 @@ export class Renderer {
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ddd';
     ctx.fillText('Pick a weapon', o.x + MENU_PAD * k, o.y + 18 * k);
-    WEAPONS.forEach((id, i) => {
-      const t = this.menuTile(i);
+    WEAPONS.forEach((id) => {
+      const t = this.menuTile(id);
       const on = id === current;
       ctx.fillStyle = on ? '#ffffff22' : '#ffffff0d';
       roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);

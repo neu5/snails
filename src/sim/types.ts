@@ -43,7 +43,10 @@ export type WeaponId =
   | 'parachute'
   | 'hide';
 
-/** Order in the weapon menu; InputFrame.weapon indexes this (1-based). */
+/**
+ * InputFrame.weapon indexes this (1-based), so saved turns depend on the order: add new weapons
+ * at the end. The menu layout is WEAPON_ROWS.
+ */
 export const WEAPONS: readonly WeaponId[] = [
   'bazooka',
   'grenade',
@@ -61,6 +64,18 @@ export const WEAPONS: readonly WeaponId[] = [
   'rope',
   'parachute',
   'hide',
+];
+
+/** The weapon menu, one kind of weapon per row, up to three in a row. */
+export const WEAPON_ROWS: readonly (readonly WeaponId[])[] = [
+  ['bazooka'],
+  ['grenade', 'cluster'],
+  ['gun', 'uzi'],
+  ['punch', 'poke', 'kamikaze'],
+  ['mine', 'dynamite'],
+  ['drill', 'torch', 'girder'],
+  ['rope', 'parachute'],
+  ['hide'],
 ];
 
 /**
