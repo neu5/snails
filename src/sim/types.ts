@@ -13,6 +13,13 @@ export interface InputFrame {
   fire: boolean;
   /** 1-based index into WEAPONS on the tick a weapon is picked from the menu, else 0 (at most 63). */
   weapon: number;
+  /** World point picked on the map on this tick (the homing missile's target), else null. */
+  target: Point | null;
+}
+
+export interface Point {
+  x: number;
+  y: number;
 }
 
 export const EMPTY_INPUT: InputFrame = {
@@ -23,6 +30,7 @@ export const EMPTY_INPUT: InputFrame = {
   jump: false,
   fire: false,
   weapon: 0,
+  target: null,
 };
 
 export type WeaponId =
@@ -41,7 +49,8 @@ export type WeaponId =
   | 'girder'
   | 'rope'
   | 'parachute'
-  | 'hide';
+  | 'hide'
+  | 'homing';
 
 /**
  * InputFrame.weapon indexes this (1-based), so saved turns depend on the order: add new weapons
@@ -64,11 +73,12 @@ export const WEAPONS: readonly WeaponId[] = [
   'rope',
   'parachute',
   'hide',
+  'homing',
 ];
 
 /** The weapon menu, one kind of weapon per row, up to three in a row. */
 export const WEAPON_ROWS: readonly (readonly WeaponId[])[] = [
-  ['bazooka'],
+  ['bazooka', 'homing'],
   ['grenade', 'cluster'],
   ['gun', 'uzi'],
   ['punch', 'poke', 'kamikaze'],
@@ -165,7 +175,7 @@ export interface Team {
 }
 
 /** A cluster bomb bursts into bomblets, which go off on impact. */
-export type ObjectKind = 'shell' | 'grenade' | 'mine' | 'dynamite' | 'cluster' | 'bomblet';
+export type ObjectKind = 'shell' | 'grenade' | 'mine' | 'dynamite' | 'cluster' | 'bomblet' | 'homing';
 
 /** Anything flying or lying on the map. Mines stay between turns. */
 export interface Projectile {
@@ -216,6 +226,8 @@ export interface GameState {
   dig: Dig | null;
   rope: Rope | null;
   hook: Hook | null;
+  /** Where the homing missile goes; picked on the map, cleared each turn. */
+  target: Point | null;
   kamikaze: Kamikaze | null;
   /** The active snail floats down under a parachute. */
   parachute: boolean;
