@@ -7,6 +7,7 @@ import {
   type GameState,
   type InputFrame,
   type ObjectKind,
+  type Point,
   type Projectile,
   type Rope,
   type SimEvent,
@@ -46,9 +47,10 @@ interface Blast {
   damage: number;
   knockback: number;
 }
-const OBJECT_KINDS: ObjectKind[] = ['shell', 'grenade', 'mine', 'dynamite', 'cluster', 'bomblet'];
+const OBJECT_KINDS: ObjectKind[] = ['shell', 'grenade', 'mine', 'dynamite', 'cluster', 'bomblet', 'homing'];
 export const BLASTS: Record<ObjectKind, Blast> = {
   shell: { terrainR: 34, damageR: 58, damage: 50, knockback: 6.5 },
+  homing: { terrainR: 30, damageR: 52, damage: 45, knockback: 6 },
   grenade: { terrainR: 30, damageR: 55, damage: 45, knockback: 6 },
   cluster: { terrainR: 24, damageR: 45, damage: 25, knockback: 5 },
   bomblet: { terrainR: 16, damageR: 34, damage: 18, knockback: 4 },
@@ -111,6 +113,23 @@ const BOUNCE = 0.45;
 
 const SETTLE_MIN_TICKS = 45;
 const SETTLE_MAX_TICKS = 600;
+
+/** Map targets are kept in cells this many px wide, so they fit in the turn log. */
+export const TARGET_GRID = 4;
+/** Launch speed; the missile then flies free for HOMING_LOCK ticks before it steers. */
+const HOMING_LAUNCH = 5;
+export const HOMING_LOCK = 20;
+/** Ticks of rocket; after that it drops like a shell. */
+export const HOMING_FUEL = 300;
+const HOMING_SPEED = 7;
+const HOMING_THRUST = 0.08;
+/** Pull toward the target, px/tick^2; it grows close by so the missile cannot circle it. */
+const HOMING_TURN = 0.35;
+const HOMING_TURN_NEAR = 150;
+/** A slow side-to-side sway, so it does not fly like a ruler. */
+const HOMING_SWAY = 0.1;
+const HOMING_SWAY_RATE = 0.14;
+const HOMING_REACH = 12;
 
 const TEAM_NAMES = ['Garden Gliders', 'Mossback Raiders'];
 const SNAIL_NAMES = [
@@ -208,6 +227,7 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     jumpTicks: 0,
     rope: null,
     hook: null,
+    target: null,
     kamikaze: null,
     parachute: false,
     objects: [],
@@ -263,6 +283,7 @@ function startTurn(state: GameState, team: number, events: SimEvent[]): void {
   state.dig = null;
   state.rope = null;
   state.hook = null;
+  state.target = null;
   state.kamikaze = null;
   state.parachute = false;
   // Only mines outlive a turn; anything else still around timed out while settling.
@@ -298,7 +319,7 @@ export function aimVector(s: Snail): [number, number] {
   return [s.facing * dcos(a), -dsin(a)];
 }
 
-export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grenade' | 'cluster' = 'shell'): Projectile {
+export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grenade' | 'cluster' | 'homing' = 'shell'): Projectile {
   const [dx, dy] = aimVector(s);
   const speed = MAX_LAUNCH_SPEED * Math.max(power, 0.05);
   return {
@@ -309,7 +330,7 @@ export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grena
     vy: dy * speed,
     age: 0,
     ownerId: s.id,
-    fuse: kind === 'shell' ? -1 : GRENADE_FUSE,
+    fuse: kind === 'shell' || kind === 'homing' ? -1 : GRENADE_FUSE,
     resting: false,
   };
 }
@@ -419,17 +440,44 @@ function burst(state: GameState, o: Projectile): void {
   }
 }
 
+const reached = (o: Projectile, t: Point) => (t.x - o.x) ** 2 + (t.y - o.y) ** 2 < HOMING_REACH * HOMING_REACH;
+
+/**
+ * The rocket's pull on the missile, if it is locked on and has fuel. It knows only where the
+ * target is: it heads straight there, and whatever stands in the way blows it up. Turning by
+ * a push, not by a set heading, gives it a curve; the sway keeps the line from being ruled.
+ */
+function steerHoming(o: Projectile, target: Point | null): boolean {
+  if (!target || o.age < HOMING_LOCK || o.age >= HOMING_FUEL) return false;
+  const speed = Math.sqrt(o.vx * o.vx + o.vy * o.vy) || 1;
+  const dx = target.x - o.x;
+  const dy = target.y - o.y;
+  const d = Math.sqrt(dx * dx + dy * dy) || 1;
+  const pull = HOMING_TURN * (1 + HOMING_TURN_NEAR / (d + 30));
+  const sway = dsin(o.age * HOMING_SWAY_RATE) * HOMING_SWAY;
+  const vx = o.vx + (dx / d) * pull - (o.vy / speed) * sway;
+  const vy = o.vy + (dy / d) * pull + (o.vx / speed) * sway;
+  const len = Math.sqrt(vx * vx + vy * vy) || 1;
+  const next = Math.min(HOMING_SPEED, speed + HOMING_THRUST);
+  o.vx = (vx / len) * next;
+  // advanceProjectile adds gravity next; the rocket cancels it.
+  o.vy = (vy / len) * next - PROJECTILE_GRAVITY;
+  return true;
+}
+
 function updateObjects(state: GameState, events: SimEvent[]): void {
   for (const o of [...state.objects]) {
     // An earlier explosion this tick may have removed it.
     if (!state.objects.includes(o)) continue;
-    if (o.kind === 'shell' || o.kind === 'bomblet') {
-      // Bomblets fly like shells but the wind does not carry them.
-      const res = advanceProjectile(o, state.terrain, state.snails, o.kind === 'shell' ? state.wind : 0);
-      if (!res) continue;
+    if (o.kind === 'shell' || o.kind === 'bomblet' || o.kind === 'homing') {
+      const homing = o.kind === 'homing' && steerHoming(o, state.target);
+      // Bomblets fly like shells but the wind does not carry them; nor does a steering rocket.
+      const res = advanceProjectile(o, state.terrain, state.snails, o.kind === 'bomblet' || homing ? 0 : state.wind);
+      const arrived = !res && homing && reached(o, state.target!);
+      if (!res && !arrived) continue;
       removeObject(state, o);
-      if (res.type === 'explode') explode(state, res.x, res.y, BLASTS[o.kind], events);
-      else if (res.y > WATER_Y) events.push({ type: 'splash', x: res.x });
+      if (arrived || res?.type === 'explode') explode(state, res?.x ?? o.x, res?.y ?? o.y, BLASTS[o.kind], events);
+      else if (res && res.y > WATER_Y) events.push({ type: 'splash', x: res.x });
       continue;
     }
     o.age++;
@@ -478,7 +526,7 @@ function explode(state: GameState, x: number, y: number, blast: Blast, events: S
   }
   // Toss nearby objects; mines caught in a blast go off shortly after.
   for (const o of state.objects) {
-    if (o.kind === 'shell') continue;
+    if (o.kind === 'shell' || o.kind === 'homing') continue;
     const dx = o.x - x;
     const dy = o.y - y;
     const d = Math.sqrt(dx * dx + dy * dy);
@@ -673,6 +721,12 @@ function jump(state: GameState, s: Snail, vx: number, vy: number): void {
   state.jumpTicks = 0;
 }
 
+/** A map point on the grid the turn log stores, clamped to the map. */
+function snapTarget(p: Point): Point {
+  const cell = (v: number, max: number) => Math.floor(clamp(v, 0, max - 1) / TARGET_GRID) * TARGET_GRID;
+  return { x: cell(p.x, MAP_W), y: cell(p.y, MAP_H) };
+}
+
 function clampAim(w: WeaponId, aim: number): number {
   if (w === 'torch') return clamp(aim, -TORCH_AIM, TORCH_AIM);
   if (w === 'girder') return clamp(aim, -STEEP_AIM, STEEP_AIM);
@@ -702,6 +756,7 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
     s.aim = clampAim(team.weapon, s.aim);
   }
   const w = team.weapon;
+  if (input.target && w === 'homing' && state.shotsFired === 0) state.target = snapTarget(input.target);
   if (state.parachute) {
     parachuteInput(state, s, input);
     return;
@@ -735,6 +790,12 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
       useWeapon(state, s, w, events);
       return;
     }
+  } else if (w === 'homing') {
+    // Nowhere to go until a target is picked.
+    if (input.fire && !state.prevInput.fire && state.target) {
+      useWeapon(state, s, w, events);
+      return;
+    }
   } else if (input.fire && !state.prevInput.fire && (s.grounded || (w !== 'drill' && w !== 'torch'))) {
     // Dig tools need ground to start from; no torching mid-jump.
     useWeapon(state, s, w, events);
@@ -752,6 +813,10 @@ function useWeapon(state: GameState, s: Snail, w: WeaponId, events: SimEvent[]):
     case 'grenade':
     case 'cluster':
       state.objects.push(launchProjectile(s, state.power, w === 'bazooka' ? 'shell' : w));
+      startRetreat(state);
+      break;
+    case 'homing':
+      state.objects.push(launchProjectile(s, HOMING_LAUNCH / MAX_LAUNCH_SPEED, w));
       startRetreat(state);
       break;
     case 'punch':
@@ -1055,7 +1120,7 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
     case 'settling': {
       state.settleTicks++;
       const still = state.snails.every((s) => !s.alive || s.grounded);
-      const busy = state.objects.some((o) => o.kind === 'shell' || o.fuse > 0 || !o.resting);
+      const busy = state.objects.some((o) => o.kind === 'shell' || o.kind === 'homing' || o.fuse > 0 || !o.resting);
       if ((still && !busy && state.settleTicks >= SETTLE_MIN_TICKS) || state.settleTicks >= SETTLE_MAX_TICKS) {
         finishTurn(state, events);
       }
@@ -1336,6 +1401,10 @@ export function hashState(state: GameState): number {
   mix(state.burstTicks);
   mix(state.retreatTicks);
   mix(state.jumpTicks);
+  if (state.target) {
+    mixF(state.target.x);
+    mixF(state.target.y);
+  }
   if (state.hook) {
     mixF(state.hook.x);
     mixF(state.hook.y);

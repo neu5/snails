@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { GRENADE_FUSE, SNAIL_R, activeSnail, createGame, girderSpot, step } from '../src/sim/game';
+import { GRENADE_FUSE, HOMING_FUEL, SNAIL_R, activeSnail, createGame, girderSpot, hashState, step } from '../src/sim/game';
 import { isSolid } from '../src/sim/terrain';
+import { TurnRecorder, rebuild, type MatchRecord } from '../src/sim/turnlog';
 import { EMPTY_INPUT, WEAPONS, WEAPON_ROWS, type GameState, type InputFrame, type SimEvent, type WeaponId } from '../src/sim/types';
 
 function ready(seed = 9): GameState {
@@ -168,5 +169,117 @@ describe('weapon menu', () => {
   it('lists every weapon once, at most three in a row', () => {
     expect(WEAPON_ROWS.flat().slice().sort()).toEqual([...WEAPONS].sort());
     expect(Math.max(...WEAPON_ROWS.map((r) => r.length))).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('homing missile', () => {
+  /** Open sky over a low floor, with snails far from the flight path. */
+  function sky(): GameState {
+    const state = createGame({ seed: 9 });
+    const t = state.terrain;
+    t.data.forEach((_, i) => (t.data[i] = Math.floor(i / t.w) >= 900 ? 1 : 0));
+    t.version++;
+    state.snails.forEach((s, i) => {
+      s.x = 300 + i * 40;
+      s.y = 891;
+    });
+    run(state, EMPTY_INPUT, 60);
+    return state;
+  }
+  const missile = (state: GameState) => state.objects.find((o) => o.kind === 'homing');
+  /** Flies it to the end, returning its path and where it blew up. */
+  function fly(state: GameState) {
+    const path: { x: number; y: number }[] = [];
+    const events: SimEvent[] = [];
+    for (let i = 0; i < 700 && missile(state); i++) {
+      const o = missile(state)!;
+      path.push({ x: o.x, y: o.y });
+      events.push(...step(state, EMPTY_INPUT));
+    }
+    const blast = events.find((e) => e.type === 'explosion');
+    return { path, blast: blast && blast.type === 'explosion' ? blast : null };
+  }
+  function aimAndFire(state: GameState, x: number, y: number) {
+    select(state, 'homing');
+    step(state, { ...EMPTY_INPUT, target: { x, y } });
+    step(state, { ...EMPTY_INPUT, fire: true });
+  }
+
+  it('does nothing until a target is picked', () => {
+    const state = sky();
+    select(state, 'homing');
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(missile(state)).toBeUndefined();
+    expect(state.phase).toBe('aiming');
+  });
+
+  it('flies to a far target from any aim and blows up there', () => {
+    for (const [x, y, aim] of [
+      [1500, 300, 45],
+      [100, 600, 60],
+      [700, 200, 20],
+      [420, 760, 80],
+    ]) {
+      const state = sky();
+      activeSnail(state)!.aim = aim;
+      aimAndFire(state, x, y);
+      expect(missile(state)).toBeDefined();
+      const { blast } = fly(state);
+      expect(blast).not.toBeNull();
+      expect(Math.hypot(blast!.x - x, blast!.y - y)).toBeLessThan(20);
+    }
+  });
+
+  it('is not smart: terrain in the way stops it', () => {
+    const state = sky();
+    const t = state.terrain;
+    for (let y = 300; y < 900; y++) for (let x = 900; x < 960; x++) t.data[y * t.w + x] = 1;
+    aimAndFire(state, 1400, 700);
+    const { blast } = fly(state);
+    expect(blast!.x).toBeLessThan(1000);
+  });
+
+  it('curves a little instead of flying a ruled line', () => {
+    const state = sky();
+    aimAndFire(state, 2000, 300);
+    const { path } = fly(state);
+    const a = path[60];
+    const b = path[path.length - 10];
+    // Largest distance from the straight line between two points of the cruise.
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const off = Math.max(...path.slice(60, -10).map((p) => Math.abs((p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)) / len));
+    expect(off).toBeGreaterThan(1);
+    expect(off).toBeLessThan(40);
+  });
+
+  it('runs out of fuel and drops', () => {
+    const state = sky();
+    activeSnail(state)!.aim = 45;
+    select(state, 'homing');
+    step(state, { ...EMPTY_INPUT, target: { x: 2550, y: 100 } });
+    state.snails.forEach((s) => (s.x = 20));
+    step(state, { ...EMPTY_INPUT, fire: true });
+    run(state, EMPTY_INPUT, HOMING_FUEL + 5);
+    const o = missile(state)!;
+    const v = o.vy;
+    run(state, EMPTY_INPUT, 20);
+    expect(missile(state)!.vy).toBeGreaterThan(v + 1);
+  });
+
+  it('replays the same from the turn log', () => {
+    const state = createGame({ seed: 21 });
+    const match: MatchRecord = { config: { ...state.config }, turns: [] };
+    const recorder = new TurnRecorder(state);
+    for (let i = 0; i < 60; i++) recorder.step(EMPTY_INPUT);
+    recorder.step({ ...EMPTY_INPUT, weapon: WEAPONS.indexOf('homing') + 1 });
+    recorder.step({ ...EMPTY_INPUT, target: { x: 1234.7, y: 321.9 } });
+    expect(state.target).toEqual({ x: 1232, y: 320 });
+    recorder.step({ ...EMPTY_INPUT, fire: true });
+    for (let i = 0; i < 2000 && match.turns.length === 0; i++) {
+      const { turn } = recorder.step(EMPTY_INPUT);
+      if (turn) match.turns.push(turn);
+    }
+    expect(match.turns).toHaveLength(1);
+    expect(hashState(rebuild(match))).toBe(hashState(state));
   });
 });

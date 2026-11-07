@@ -1,4 +1,4 @@
-import { GIRDER_LEN, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { GIRDER_LEN, HOMING_FUEL, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
 import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
@@ -26,6 +26,7 @@ const BAR_W = 172;
 
 const WEAPON_NAMES: Record<WeaponId, string> = {
   bazooka: 'Bazooka',
+  homing: 'Homing',
   grenade: 'Grenade',
   cluster: 'Cluster',
   gun: 'Gun',
@@ -189,7 +190,7 @@ export class Renderer {
 
   /** What the camera should watch: something flying, else the snail whose turn it is. */
   private focus(state: GameState): { x: number; y: number; fast: boolean } | null {
-    const shell = state.objects.find((o) => o.kind === 'shell');
+    const shell = state.objects.find((o) => o.kind === 'shell' || o.kind === 'homing');
     if (shell) return { x: shell.x, y: shell.y, fast: true };
     if (state.hook) return { x: state.hook.x, y: state.hook.y, fast: true };
     const thrown = state.objects.find((o) => !o.resting && o.kind !== 'mine');
@@ -403,6 +404,7 @@ export class Renderer {
     this.drawRope(ctx, state);
     for (const s of state.snails) this.drawSnail(ctx, state, s);
     for (const o of state.objects) this.drawObject(ctx, o);
+    this.drawTarget(ctx, state);
     this.drawDigTool(ctx, state);
     this.drawGear(ctx, state);
     this.drawTracers(ctx);
@@ -563,6 +565,9 @@ export class Renderer {
       case 'shell':
         this.drawProjectile(ctx, o.x, o.y, o.vx, o.vy);
         return;
+      case 'homing':
+        this.drawMissile(ctx, o);
+        return;
       case 'bomblet':
         ctx.fillStyle = '#2a2a2e';
         ctx.beginPath();
@@ -641,6 +646,63 @@ export class Renderer {
       next.push(t);
     }
     this.tracers = next;
+  }
+
+  /** The homing missile: slim and white, a flame and a smoke trail while it has fuel. */
+  private drawMissile(ctx: CanvasRenderingContext2D, o: Projectile): void {
+    const burning = o.age < HOMING_FUEL;
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    ctx.rotate(Math.atan2(o.vy, o.vx));
+    if (burning) {
+      const len = 7 + Math.random() * 5;
+      ctx.fillStyle = '#ff9f1c';
+      ctx.beginPath();
+      ctx.moveTo(-7, -2.5);
+      ctx.lineTo(-7 - len, 0);
+      ctx.lineTo(-7, 2.5);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#c62f2f';
+    ctx.beginPath();
+    ctx.moveTo(-8, -5);
+    ctx.lineTo(-3, -2);
+    ctx.lineTo(-3, 2);
+    ctx.lineTo(-8, 5);
+    ctx.fill();
+    ctx.fillStyle = '#e6e9ee';
+    ctx.fillRect(-8, -2.5, 13, 5);
+    ctx.fillStyle = '#c62f2f';
+    ctx.beginPath();
+    ctx.moveTo(5, -2.5);
+    ctx.lineTo(10, 0);
+    ctx.lineTo(5, 2.5);
+    ctx.fill();
+    ctx.restore();
+    if (burning && this.frame % 2 === 0) {
+      this.puff(o.x, o.y, -o.vx * 0.05, -o.vy * 0.05, 30, '#ddd8', 3, -0.01);
+    }
+  }
+
+  /** The picked target, turning slowly. */
+  private drawTarget(ctx: CanvasRenderingContext2D, state: GameState): void {
+    const t = state.target;
+    if (!t) return;
+    const r = 13 + Math.sin(this.frame * 0.1) * 1.5;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(this.frame * 0.02);
+    ctx.strokeStyle = '#ff4d4d';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2;
+      ctx.moveTo(Math.cos(a) * (r - 5), Math.sin(a) * (r - 5));
+      ctx.lineTo(Math.cos(a) * (r + 6), Math.sin(a) * (r + 6));
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawProjectile(ctx: CanvasRenderingContext2D, x: number, y: number, vx: number, vy: number): void {
@@ -783,7 +845,12 @@ export class Renderer {
     ctx.save();
     ctx.translate(s.x, s.y - 2);
     ctx.rotate(Math.atan2(dy, dx));
-    if (weapon === 'bazooka') {
+    if (weapon === 'homing') {
+      ctx.fillStyle = '#e6e9ee';
+      ctx.fillRect(0, -3, 18, 6);
+      ctx.fillStyle = '#c62f2f';
+      ctx.fillRect(15, -4, 4, 8);
+    } else if (weapon === 'bazooka') {
       ctx.fillStyle = '#55613f';
       ctx.fillRect(0, -3, 18, 6);
       ctx.fillStyle = '#2e3522';
@@ -1315,6 +1382,30 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
   ctx.translate(cx, cy);
   ctx.scale(size / 32, size / 32);
   switch (id) {
+    case 'homing':
+      // White missile homing in on a red ring.
+      ctx.strokeStyle = '#ff4d4d';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(9, -9, 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.rotate(-0.75);
+      ctx.fillStyle = '#c62f2f';
+      ctx.beginPath();
+      ctx.moveTo(-13, -6);
+      ctx.lineTo(-7, -2.5);
+      ctx.lineTo(-7, 2.5);
+      ctx.lineTo(-13, 6);
+      ctx.fill();
+      ctx.fillStyle = '#e6e9ee';
+      ctx.fillRect(-12, -3, 15, 6);
+      ctx.fillStyle = '#c62f2f';
+      ctx.beginPath();
+      ctx.moveTo(3, -3);
+      ctx.lineTo(8, 0);
+      ctx.lineTo(3, 3);
+      ctx.fill();
+      break;
     case 'bazooka':
       ctx.rotate(-0.5);
       ctx.fillStyle = '#6b7a4f';

@@ -44,6 +44,7 @@ the water is fatal. The last team with snails left wins.
 | Weapon | How it works |
 | --- | --- |
 | Bazooka | Charged shot, wind bends it, explodes on impact |
+| Homing | Click the map to pick a target, aim, then Space: the missile leaves along the aim and flies itself there. It is not smart: it goes straight for the target and blows up on anything in the way. Out of fuel after 5 s, it drops |
 | Grenade | Charged throw, bounces, no wind, explodes after 3 s |
 | Cluster | Like the grenade, but bursts into five bomblets that go off where they land |
 | Gun | Two instant shots (25 damage each); you may re-aim between them |
