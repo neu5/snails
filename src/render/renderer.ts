@@ -42,6 +42,8 @@ const WEAPON_NAMES: Record<WeaponId, string> = {
   rope: 'Rope',
   parachute: 'Parachute',
   hide: 'Hide',
+  select: 'Change',
+  surrender: 'Surrender',
 };
 
 type Rect = { x: number; y: number; size: number };
@@ -81,7 +83,7 @@ interface Tracer {
 const ROPE_COLOR = '#c8a165';
 
 /** Weapons used without aiming: no crosshair. */
-const NO_AIM = new Set<WeaponId>(['mine', 'dynamite', 'drill', 'punch', 'poke', 'parachute', 'hide']);
+const NO_AIM = new Set<WeaponId>(['mine', 'dynamite', 'drill', 'punch', 'poke', 'parachute', 'hide', 'select', 'surrender']);
 
 interface FloatText {
   x: number;
@@ -278,6 +280,20 @@ export class Renderer {
           this.texts.push({ x: e.x, y: e.y - 16, text: e.poke ? 'poke!' : e.hit ? 'POW!' : 'swish', color: e.hit ? '#ffe17a' : '#ddd', life: 0 });
           if (e.hit && !e.poke) this.shake = Math.max(this.shake, 5);
           break;
+        case 'surrender':
+          this.banner = { text: `${state.teams[e.team].name} surrender`, color: '#fff', life: 0 };
+          break;
+        case 'select': {
+          if (!this.overview) this.camera.manual = false;
+          const s = state.snails[e.snailId];
+          this.banner = { text: `${s.name}'s turn`, color: TEAM_COLORS[s.team], life: 40 };
+          break;
+        }
+        case 'selectRefused': {
+          const s = state.snails[e.snailId];
+          this.texts.push({ x: s.x, y: s.y - 36, text: 'moved: no change', color: '#ddd', life: 0 });
+          break;
+        }
         case 'hide': {
           const s = state.snails[e.snailId];
           this.texts.push({ x: s.x, y: s.y - 30, text: 'zzz', color: '#bfe8ff', life: 0 });
@@ -539,6 +555,7 @@ export class Renderer {
     }
     ctx.stroke();
     ctx.restore();
+    if (state.teams[s.team]?.surrendered) drawWhiteFlag(ctx, s.x - 4 * f, s.y - 6, this.frame);
 
     // Label.
     ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
@@ -1595,6 +1612,32 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.arc(0, 12, 3.5, 0, Math.PI * 2);
       ctx.fill();
       break;
+    case 'select':
+      // Two shells with arrows going round between them.
+      for (const [x, c] of [
+        [-7, '#ffb36b'],
+        [7, '#9fe0ff'],
+      ] as const) {
+        ctx.fillStyle = c;
+        ctx.beginPath();
+        ctx.arc(x, 5, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 2, 11, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(10, -9);
+      ctx.lineTo(4, -11);
+      ctx.lineTo(9, -4);
+      ctx.fill();
+      break;
+    case 'surrender':
+      drawWhiteFlag(ctx, -4, 12, 0, 1.4);
+      break;
     case 'hide':
       // A shell with "zzz".
       ctx.fillStyle = '#ffb36b';
@@ -1651,6 +1694,32 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.fill();
       break;
   }
+  ctx.restore();
+}
+
+/** A white flag on a stick, the stick's foot at (x, y). */
+function drawWhiteFlag(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, scale = 1): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.strokeStyle = '#8a6a44';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, -22);
+  ctx.stroke();
+  const wave = Math.sin(frame * 0.12) * 1.5;
+  ctx.fillStyle = '#f4f4f0';
+  ctx.strokeStyle = '#999';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(0, -22);
+  ctx.quadraticCurveTo(6, -24 + wave, 12, -21);
+  ctx.lineTo(12, -13);
+  ctx.quadraticCurveTo(6, -16 - wave, 0, -14);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
   ctx.restore();
 }
 

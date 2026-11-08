@@ -60,6 +60,8 @@ the water is fatal. The last team with snails left wins.
 | Rope | Throws a hook along the aim (reach 260 px, about half a second to fly out); see below |
 | Parachute | Opens in the air (jump off a ledge, then fire): slow, safe fall, ←/→ steer, wind drifts it; not a shot, the turn goes on |
 | Hide | Tuck into the shell and skip your move |
+| Change | Before your snail moves, hand the turn to your next snail (press again to keep going round); not a shot, the turn goes on |
+| Surrender | Your team gives up and is out; with two teams the other one wins |
 
 **Rope.** Space shoots the hook; it sticks to the first ground it hits. On the rope, ↑ / ↓
 reel in and out, ← / → push the swing, and Space or Enter lets go, keeping the speed. With a

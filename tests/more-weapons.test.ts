@@ -283,3 +283,70 @@ describe('homing missile', () => {
     expect(hashState(rebuild(match))).toBe(hashState(state));
   });
 });
+
+describe('change snail and surrender', () => {
+  it('change hands the turn to the next living teammate and keeps the turn going', () => {
+    const state = ready();
+    const first = activeSnail(state)!;
+    const mates = state.snails.filter((s) => s.team === first.team);
+    expect(mates.length).toBeGreaterThan(1);
+    mates[(mates.indexOf(first) + 1) % mates.length].alive = false;
+    select(state, 'select');
+    const events = step(state, { ...EMPTY_INPUT, fire: true });
+    const now = activeSnail(state)!;
+    expect(now.team).toBe(first.team);
+    expect(now).not.toBe(first);
+    expect(now.alive).toBe(true);
+    expect(events.some((e) => e.type === 'select' && e.snailId === now.id)).toBe(true);
+    expect(state.phase).toBe('aiming');
+    expect(state.shotsFired).toBe(0);
+    // The new snail can still use a weapon this turn.
+    select(state, 'gun');
+  });
+
+  it('change is refused once the snail has moved', () => {
+    const state = ready();
+    const first = activeSnail(state)!;
+    run(state, { ...EMPTY_INPUT, [first.facing > 0 ? 'right' : 'left']: true }, 30);
+    expect(state.moved).toBe(true);
+    select(state, 'select');
+    const events = step(state, { ...EMPTY_INPUT, fire: true });
+    expect(activeSnail(state)).toBe(first);
+    expect(events.some((e) => e.type === 'selectRefused')).toBe(true);
+  });
+
+  it('the snail handed the turn may still change on before it moves', () => {
+    const state = ready();
+    const first = activeSnail(state)!;
+    select(state, 'select');
+    step(state, { ...EMPTY_INPUT, fire: true });
+    const second = activeSnail(state)!;
+    expect(state.moved).toBe(false);
+    step(state, EMPTY_INPUT);
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(activeSnail(state)).not.toBe(second);
+    expect(activeSnail(state)!.team).toBe(first.team);
+  });
+
+  it('change does nothing in the air', () => {
+    const state = ready();
+    const first = activeSnail(state)!;
+    select(state, 'select');
+    first.grounded = false;
+    first.vy = -2;
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(activeSnail(state)).toBe(first);
+  });
+
+  it('surrender puts the team out and the other team wins', () => {
+    const state = ready();
+    const team = state.activeTeam;
+    select(state, 'surrender');
+    const events = run(state, { ...EMPTY_INPUT, fire: true }, 1);
+    for (let i = 0; i < 1000 && state.phase !== 'gameover'; i++) events.push(...step(state, EMPTY_INPUT));
+    expect(events.some((e) => e.type === 'surrender' && e.team === team)).toBe(true);
+    expect(state.teams[team].surrendered).toBe(true);
+    expect(state.phase).toBe('gameover');
+    expect(state.winner).toBe(1 - team);
+  });
+});

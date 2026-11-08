@@ -213,7 +213,7 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     rng: rng.state,
     terrain,
     snails,
-    teams: TEAM_NAMES.slice(0, teamCount).map((name, id) => ({ id, name, nextIndex: 0, weapon: 'bazooka' as WeaponId })),
+    teams: TEAM_NAMES.slice(0, teamCount).map((name, id) => ({ id, name, nextIndex: 0, weapon: 'bazooka' as WeaponId, surrendered: false })),
     activeTeam: 0,
     activeSnailId: 0,
     turnNumber: 0,
@@ -228,6 +228,8 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     rope: null,
     hook: null,
     target: null,
+    startSpot: { x: 0, y: 0 },
+    moved: false,
     kamikaze: null,
     parachute: false,
     objects: [],
@@ -284,6 +286,8 @@ function startTurn(state: GameState, team: number, events: SimEvent[]): void {
   state.rope = null;
   state.hook = null;
   state.target = null;
+  state.startSpot = { x: pick.x, y: pick.y };
+  state.moved = false;
   state.kamikaze = null;
   state.parachute = false;
   // Only mines outlive a turn; anything else still around timed out while settling.
@@ -301,7 +305,7 @@ function finishTurn(state: GameState, events: SimEvent[]): void {
       events.push({ type: 'death', snailId: s.id });
     }
   }
-  const aliveTeams = state.teams.filter((t) => state.snails.some((s) => s.alive && s.team === t.id));
+  const aliveTeams = state.teams.filter((t) => !t.surrendered && state.snails.some((s) => s.alive && s.team === t.id));
   if (aliveTeams.length <= 1) {
     state.phase = 'gameover';
     state.winner = aliveTeams.length === 1 ? aliveTeams[0].id : -1;
@@ -721,6 +725,30 @@ function jump(state: GameState, s: Snail, vx: number, vy: number): void {
   state.jumpTicks = 0;
 }
 
+/** A snail this far (px) from where its turn began has moved, and can no longer hand the turn on. */
+const MOVED_BY = 1;
+
+/** Switches this turn to the next living snail of the team, if this one has not moved yet. */
+function selectNextSnail(state: GameState, s: Snail, events: SimEvent[]): void {
+  if (state.moved) {
+    events.push({ type: 'selectRefused', snailId: s.id });
+    return;
+  }
+  if (!s.grounded || state.rope || state.hook || state.parachute) return;
+  const members = teamSnails(state, s.team);
+  const start = members.indexOf(s);
+  for (let k = 1; k < members.length; k++) {
+    const next = members[(start + k) % members.length];
+    if (!next.alive) continue;
+    state.activeSnailId = next.id;
+    state.startSpot = { x: next.x, y: next.y };
+    next.hidden = false;
+    state.jumpTicks = 0;
+    events.push({ type: 'select', snailId: next.id });
+    return;
+  }
+}
+
 /** A map point on the grid the turn log stores, clamped to the map. */
 function snapTarget(p: Point): Point {
   const cell = (v: number, max: number) => Math.floor(clamp(v, 0, max - 1) / TARGET_GRID) * TARGET_GRID;
@@ -790,6 +818,12 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
       useWeapon(state, s, w, events);
       return;
     }
+  } else if (w === 'select') {
+    // Each press hands the turn to the next snail of the team; not a shot, the turn goes on.
+    if (input.fire && !state.prevInput.fire) {
+      selectNextSnail(state, s, events);
+      return;
+    }
   } else if (w === 'homing') {
     // Nowhere to go until a target is picked.
     if (input.fire && !state.prevInput.fire && state.target) {
@@ -836,6 +870,12 @@ function useWeapon(state: GameState, s: Snail, w: WeaponId, events: SimEvent[]):
     case 'girder':
       placeGirder(state, s);
       startRetreat(state);
+      break;
+    case 'surrender':
+      // The team gives up and is out; with two teams that ends the game.
+      state.teams[s.team].surrendered = true;
+      events.push({ type: 'surrender', team: s.team });
+      beginSettling(state);
       break;
     case 'hide':
       // Skips the move: the snail tucks into its shell until its next turn.
@@ -1146,6 +1186,7 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
   if (isMoving(state)) {
     const a = activeSnail(state);
     if (!a || !a.alive) beginSettling(state);
+    else if (Math.abs(a.x - state.startSpot.x) > MOVED_BY || Math.abs(a.y - state.startSpot.y) > MOVED_BY) state.moved = true;
   }
 
   state.prevInput = { ...input };
@@ -1401,6 +1442,9 @@ export function hashState(state: GameState): number {
   mix(state.burstTicks);
   mix(state.retreatTicks);
   mix(state.jumpTicks);
+  mix(state.moved ? 1 : 0);
+  mixF(state.startSpot.x);
+  mixF(state.startSpot.y);
   if (state.target) {
     mixF(state.target.x);
     mixF(state.target.y);
@@ -1425,7 +1469,10 @@ export function hashState(state: GameState): number {
     mix(state.dig.falling ? 1 : 0);
     mix(state.dig.hp);
   }
-  for (const t of state.teams) mix(WEAPONS.indexOf(t.weapon));
+  for (const t of state.teams) {
+    mix(WEAPONS.indexOf(t.weapon));
+    mix(t.surrendered ? 1 : 0);
+  }
   for (const o of state.objects) {
     mix(OBJECT_KINDS.indexOf(o.kind));
     mixF(o.x);

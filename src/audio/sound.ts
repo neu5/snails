@@ -309,6 +309,12 @@ export class Sound {
           this.tone(520, 240, 0.16, 'triangle', { x: e.x, gain: 0.12 });
           this.hiss('lowpass', 900, 200, 0.12, { x: e.x, gain: 0.08 });
           break;
+        case 'select':
+          this.tone(700, 900, 0.08, 'sine', { gain: 0.05 });
+          break;
+        case 'surrender':
+          [523, 466, 392, 330].forEach((f, i) => this.tone(f, f * 0.98, 0.5, 'triangle', { gain: 0.05, delay: i * 0.22 }));
+          break;
         case 'turn':
           this.tone(660, 660, 0.9, 'sine', { gain: 0.04 });
           this.tone(990, 990, 1.1, 'sine', { gain: 0.03, delay: 0.12 });
