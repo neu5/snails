@@ -1,4 +1,4 @@
-import { GIRDER_LEN, HOMING_FUEL, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { GIRDER_LEN, HOMING_FUEL, MAP_H, ammoLeft, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
 import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
@@ -42,6 +42,8 @@ const WEAPON_NAMES: Record<WeaponId, string> = {
   rope: 'Rope',
   parachute: 'Parachute',
   hide: 'Hide',
+  select: 'Change',
+  surrender: 'Surrender',
 };
 
 type Rect = { x: number; y: number; size: number };
@@ -81,7 +83,7 @@ interface Tracer {
 const ROPE_COLOR = '#c8a165';
 
 /** Weapons used without aiming: no crosshair. */
-const NO_AIM = new Set<WeaponId>(['mine', 'dynamite', 'drill', 'punch', 'poke', 'parachute', 'hide']);
+const NO_AIM = new Set<WeaponId>(['mine', 'dynamite', 'drill', 'punch', 'poke', 'parachute', 'hide', 'select', 'surrender']);
 
 interface FloatText {
   x: number;
@@ -278,6 +280,20 @@ export class Renderer {
           this.texts.push({ x: e.x, y: e.y - 16, text: e.poke ? 'poke!' : e.hit ? 'POW!' : 'swish', color: e.hit ? '#ffe17a' : '#ddd', life: 0 });
           if (e.hit && !e.poke) this.shake = Math.max(this.shake, 5);
           break;
+        case 'surrender':
+          this.banner = { text: `${state.teams[e.team].name} surrender`, color: '#fff', life: 0 };
+          break;
+        case 'select': {
+          if (!this.overview) this.camera.manual = false;
+          const s = state.snails[e.snailId];
+          this.banner = { text: `${s.name}'s turn`, color: TEAM_COLORS[s.team], life: 40 };
+          break;
+        }
+        case 'selectRefused': {
+          const s = state.snails[e.snailId];
+          this.texts.push({ x: s.x, y: s.y - 36, text: 'moved: no change', color: '#ddd', life: 0 });
+          break;
+        }
         case 'hide': {
           const s = state.snails[e.snailId];
           this.texts.push({ x: s.x, y: s.y - 30, text: 'zzz', color: '#bfe8ff', life: 0 });
@@ -539,6 +555,7 @@ export class Renderer {
     }
     ctx.stroke();
     ctx.restore();
+    if (state.teams[s.team]?.surrendered) drawWhiteFlag(ctx, s.x - 4 * f, s.y - 6, this.frame);
 
     // Label.
     ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
@@ -1175,7 +1192,11 @@ export class Renderer {
     if (!this.menuOpen) return { used: false, weapon: 0 };
     this.menuOpen = false;
     this.hoverOpen = false;
-    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(WEAPONS[i], true))) return { used: true, weapon: i + 1 };
+    const team = state.teams[state.activeTeam];
+    for (let i = 0; i < WEAPONS.length; i++) {
+      // A used-up weapon cannot be picked; the tap just closes the menu.
+      if (inside(this.menuTile(WEAPONS[i], true))) return { used: true, weapon: team && ammoLeft(team, WEAPONS[i]) === 0 ? 0 : i + 1 };
+    }
     // A tap anywhere else just closes the menu.
     return { used: true, weapon: 0 };
   }
@@ -1205,6 +1226,8 @@ export class Renderer {
     ctx.lineWidth = 2.5 * k;
     ctx.stroke();
     drawWeaponIcon(ctx, current, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
+    const left = ammoLeft(state.teams[state.activeTeam], current);
+    if (left !== Infinity) drawAmmo(ctx, left, t.x + t.size - 3 * k, t.y + 3 * k, k);
     // A small arrow says it opens.
     if (!locked) {
       ctx.fillStyle = '#fffc';
@@ -1240,9 +1263,12 @@ export class Renderer {
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ddd';
     ctx.fillText('Pick a weapon', o.x + MENU_PAD * k, o.y + 18 * k);
+    const team = state.teams[state.activeTeam];
     WEAPONS.forEach((id) => {
       const t = this.menuTile(id);
       const on = id === current;
+      const left = team ? ammoLeft(team, id) : Infinity;
+      ctx.globalAlpha = left === 0 ? 0.3 : 1;
       ctx.fillStyle = on ? '#ffffff22' : '#ffffff0d';
       roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
       ctx.fill();
@@ -1256,6 +1282,8 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.fillStyle = '#ddd';
       ctx.fillText(WEAPON_NAMES[id], t.x + t.size / 2, t.y + t.size - 4 * k);
+      if (left !== Infinity) drawAmmo(ctx, left, t.x + t.size - 3 * k, t.y + 3 * k, k);
+      ctx.globalAlpha = 1;
     });
   }
 
@@ -1595,6 +1623,32 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.arc(0, 12, 3.5, 0, Math.PI * 2);
       ctx.fill();
       break;
+    case 'select':
+      // Two shells with arrows going round between them.
+      for (const [x, c] of [
+        [-7, '#ffb36b'],
+        [7, '#9fe0ff'],
+      ] as const) {
+        ctx.fillStyle = c;
+        ctx.beginPath();
+        ctx.arc(x, 5, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 2, 11, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(10, -9);
+      ctx.lineTo(4, -11);
+      ctx.lineTo(9, -4);
+      ctx.fill();
+      break;
+    case 'surrender':
+      drawWhiteFlag(ctx, -4, 12, 0, 1.4);
+      break;
     case 'hide':
       // A shell with "zzz".
       ctx.fillStyle = '#ffb36b';
@@ -1651,6 +1705,46 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.fill();
       break;
   }
+  ctx.restore();
+}
+
+/** Uses left, as a small number badge with its top-right corner at (x, y). */
+function drawAmmo(ctx: CanvasRenderingContext2D, n: number, x: number, y: number, k: number): void {
+  const text = String(n);
+  ctx.font = `bold ${Math.round(9 * k)}px Verdana, Arial, Helvetica, sans-serif`;
+  const w = Math.max(12 * k, ctx.measureText(text).width + 6 * k);
+  const h = 12 * k;
+  ctx.fillStyle = n === 0 ? '#555' : '#ffd166';
+  roundRect(ctx, x - w, y, w, h, 6 * k);
+  ctx.fill();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, x - w / 2, y + 9 * k);
+}
+
+/** A white flag on a stick, the stick's foot at (x, y). */
+function drawWhiteFlag(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, scale = 1): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.strokeStyle = '#8a6a44';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, -22);
+  ctx.stroke();
+  const wave = Math.sin(frame * 0.12) * 1.5;
+  ctx.fillStyle = '#f4f4f0';
+  ctx.strokeStyle = '#999';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(0, -22);
+  ctx.quadraticCurveTo(6, -24 + wave, 12, -21);
+  ctx.lineTo(12, -13);
+  ctx.quadraticCurveTo(6, -16 - wave, 0, -14);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
   ctx.restore();
 }
 

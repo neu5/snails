@@ -60,6 +60,8 @@ the water is fatal. The last team with snails left wins.
 | Rope | Throws a hook along the aim (reach 260 px, about half a second to fly out); see below |
 | Parachute | Opens in the air (jump off a ledge, then fire): slow, safe fall, ←/→ steer, wind drifts it; not a shot, the turn goes on |
 | Hide | Tuck into the shell and skip your move |
+| Change | Before your snail moves, hand the turn to your next snail (press again to keep going round); not a shot, the turn goes on |
+| Surrender | Your team gives up and is out; with two teams the other one wins |
 
 **Rope.** Space shoots the hook; it sticks to the first ground it hits. On the rope, ↑ / ↓
 reel in and out, ← / → push the swing, and Space or Enter lets go, keeping the speed. With a
@@ -69,7 +71,11 @@ again, even in mid-air, shoots a new rope. The rope bends around corners. Roping
 shot: the turn goes on, so you can swing somewhere and then pick a weapon. Swing fast into
 another snail to knock it away (into the water, or off a cliff for a painful fall).
 
-Each team keeps its last weapon between turns. Ammo is unlimited for now.
+Each team keeps its last weapon between turns. Some weapons have limited uses per team (the
+config's `ammo`; anything not listed is unlimited). The menu shows a number on those, and dims
+a used-up one so it cannot be picked. Default limits: Homing 1, Cluster 2, Kamikaze 1, Mine 4,
+Dynamite 1, Drill 4, Blowtorch 4, Platform 2, Rope 4, Change 1. A use covers a whole turn:
+throwing the rope again, the gun's second shot or going on round the team with Change is free.
 
 On a phone, hold it sideways: on-screen buttons appear for walking, aiming, jumping and
 firing; tap the weapon box to slide out the weapon drawer, then tap a weapon. The top row has replay last move, skip replay, new map,

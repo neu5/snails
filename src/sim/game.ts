@@ -12,6 +12,7 @@ import {
   type Rope,
   type SimEvent,
   type Snail,
+  type Team,
   type WeaponId,
 } from './types';
 
@@ -142,6 +143,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   snailsPerTeam: 3,
   startHp: 100,
   turnSeconds: 30,
+  ammo: { homing: 1, cluster: 2, kamikaze: 1, mine: 4, dynamite: 1, drill: 4, torch: 4, girder: 2, rope: 4, select: 1 },
 };
 
 const CIRCLE_OFFSETS: [number, number][] = (() => {
@@ -213,7 +215,7 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     rng: rng.state,
     terrain,
     snails,
-    teams: TEAM_NAMES.slice(0, teamCount).map((name, id) => ({ id, name, nextIndex: 0, weapon: 'bazooka' as WeaponId })),
+    teams: TEAM_NAMES.slice(0, teamCount).map((name, id) => ({ id, name, nextIndex: 0, weapon: 'bazooka' as WeaponId, surrendered: false, ammo: { ...config.ammo } })),
     activeTeam: 0,
     activeSnailId: 0,
     turnNumber: 0,
@@ -228,6 +230,9 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     rope: null,
     hook: null,
     target: null,
+    startSpot: { x: 0, y: 0 },
+    moved: false,
+    paid: [],
     kamikaze: null,
     parachute: false,
     objects: [],
@@ -284,6 +289,11 @@ function startTurn(state: GameState, team: number, events: SimEvent[]): void {
   state.rope = null;
   state.hook = null;
   state.target = null;
+  state.startSpot = { x: pick.x, y: pick.y };
+  state.moved = false;
+  state.paid = [];
+  // A weapon used up last time is no longer in hand.
+  if (ammoLeft(t, t.weapon) === 0) t.weapon = WEAPONS.find((w) => ammoLeft(t, w) > 0) ?? t.weapon;
   state.kamikaze = null;
   state.parachute = false;
   // Only mines outlive a turn; anything else still around timed out while settling.
@@ -301,7 +311,7 @@ function finishTurn(state: GameState, events: SimEvent[]): void {
       events.push({ type: 'death', snailId: s.id });
     }
   }
-  const aliveTeams = state.teams.filter((t) => state.snails.some((s) => s.alive && s.team === t.id));
+  const aliveTeams = state.teams.filter((t) => !t.surrendered && state.snails.some((s) => s.alive && s.team === t.id));
   if (aliveTeams.length <= 1) {
     state.phase = 'gameover';
     state.winner = aliveTeams.length === 1 ? aliveTeams[0].id : -1;
@@ -721,6 +731,31 @@ function jump(state: GameState, s: Snail, vx: number, vy: number): void {
   state.jumpTicks = 0;
 }
 
+/** A snail this far (px) from where its turn began has moved, and can no longer hand the turn on. */
+const MOVED_BY = 1;
+
+/** Switches this turn to the next living snail of the team, if this one has not moved yet. */
+function selectNextSnail(state: GameState, s: Snail, events: SimEvent[]): void {
+  if (state.moved) {
+    events.push({ type: 'selectRefused', snailId: s.id });
+    return;
+  }
+  if (!s.grounded || state.rope || state.hook || state.parachute) return;
+  const members = teamSnails(state, s.team);
+  const start = members.indexOf(s);
+  for (let k = 1; k < members.length; k++) {
+    const next = members[(start + k) % members.length];
+    if (!next.alive) continue;
+    spend(state, 'select');
+    state.activeSnailId = next.id;
+    state.startSpot = { x: next.x, y: next.y };
+    next.hidden = false;
+    state.jumpTicks = 0;
+    events.push({ type: 'select', snailId: next.id });
+    return;
+  }
+}
+
 /** A map point on the grid the turn log stores, clamped to the map. */
 function snapTarget(p: Point): Point {
   const cell = (v: number, max: number) => Math.floor(clamp(v, 0, max - 1) / TARGET_GRID) * TARGET_GRID;
@@ -751,8 +786,9 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
   }
   if (state.phase !== 'aiming') return;
 
-  if (input.weapon > 0 && input.weapon <= WEAPONS.length && state.shotsFired === 0 && !state.charging) {
-    team.weapon = WEAPONS[input.weapon - 1];
+  const picked = WEAPONS[input.weapon - 1];
+  if (picked && state.shotsFired === 0 && !state.charging && ammoLeft(team, picked) > 0) {
+    team.weapon = picked;
     s.aim = clampAim(team.weapon, s.aim);
   }
   const w = team.weapon;
@@ -763,8 +799,14 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
   }
   if (state.rope) {
     // Enter on the rope drops a mine or dynamite (and the snail keeps swinging); else lets go.
-    if ((w === 'mine' || w === 'dynamite') && input.jump && !state.prevInput.jump) useWeapon(state, s, w, events);
+    const drop = (w === 'mine' || w === 'dynamite') && ammoLeft(team, w) > 0;
+    if (drop && input.jump && !state.prevInput.jump) useWeapon(state, s, w, events);
     else ropeInput(state, s, input);
+    return;
+  }
+  // Used up: walk around, pick another weapon.
+  if (ammoLeft(team, w) === 0 && !state.paid.includes(w)) {
+    if (state.shotsFired === 0) move(state, s, input);
     return;
   }
   if (w === 'rope') {
@@ -777,6 +819,7 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
     if (input.fire && !state.prevInput.fire && !s.grounded) {
       state.parachute = true;
       state.jumpTicks = 0;
+      spend(state, 'parachute');
       return;
     }
   } else if (isCharged(w)) {
@@ -788,6 +831,12 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
     }
     if (state.charging) {
       useWeapon(state, s, w, events);
+      return;
+    }
+  } else if (w === 'select') {
+    // Each press hands the turn to the next snail of the team; not a shot, the turn goes on.
+    if (input.fire && !state.prevInput.fire) {
+      selectNextSnail(state, s, events);
       return;
     }
   } else if (w === 'homing') {
@@ -805,8 +854,22 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
   if (state.shotsFired === 0) move(state, s, input);
 }
 
+/** Uses left of a weapon; Infinity when it is not limited. */
+export function ammoLeft(team: Team, w: WeaponId): number {
+  return team.ammo[w] ?? Infinity;
+}
+
+/** Takes one use of a limited weapon from the active team, at most once per turn. */
+function spend(state: GameState, w: WeaponId): void {
+  const ammo = state.teams[state.activeTeam].ammo;
+  if (ammo[w] === undefined || state.paid.includes(w)) return;
+  ammo[w] = Math.max(0, ammo[w]! - 1);
+  state.paid.push(w);
+}
+
 function useWeapon(state: GameState, s: Snail, w: WeaponId, events: SimEvent[]): void {
   events.push({ type: 'fire', snailId: s.id, weapon: w });
+  spend(state, w);
   state.shotsFired++;
   switch (w) {
     case 'bazooka':
@@ -836,6 +899,12 @@ function useWeapon(state: GameState, s: Snail, w: WeaponId, events: SimEvent[]):
     case 'girder':
       placeGirder(state, s);
       startRetreat(state);
+      break;
+    case 'surrender':
+      // The team gives up and is out; with two teams that ends the game.
+      state.teams[s.team].surrendered = true;
+      events.push({ type: 'surrender', team: s.team });
+      beginSettling(state);
       break;
     case 'hide':
       // Skips the move: the snail tucks into its shell until its next turn.
@@ -1146,6 +1215,7 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
   if (isMoving(state)) {
     const a = activeSnail(state);
     if (!a || !a.alive) beginSettling(state);
+    else if (Math.abs(a.x - state.startSpot.x) > MOVED_BY || Math.abs(a.y - state.startSpot.y) > MOVED_BY) state.moved = true;
   }
 
   state.prevInput = { ...input };
@@ -1168,6 +1238,7 @@ const HOOK_SPEED = 8;
 
 /** Throws the hook along the aim; it flies for a moment before it sticks or falls short. */
 function fireRope(state: GameState, s: Snail): void {
+  spend(state, 'rope');
   const [dx, dy] = aimVector(s);
   state.hook = { x: s.x, y: s.y, dx, dy, dist: 0 };
   state.jumpTicks = 0;
@@ -1401,6 +1472,10 @@ export function hashState(state: GameState): number {
   mix(state.burstTicks);
   mix(state.retreatTicks);
   mix(state.jumpTicks);
+  mix(state.moved ? 1 : 0);
+  for (const w of state.paid) mix(WEAPONS.indexOf(w));
+  mixF(state.startSpot.x);
+  mixF(state.startSpot.y);
   if (state.target) {
     mixF(state.target.x);
     mixF(state.target.y);
@@ -1425,7 +1500,11 @@ export function hashState(state: GameState): number {
     mix(state.dig.falling ? 1 : 0);
     mix(state.dig.hp);
   }
-  for (const t of state.teams) mix(WEAPONS.indexOf(t.weapon));
+  for (const t of state.teams) {
+    mix(WEAPONS.indexOf(t.weapon));
+    mix(t.surrendered ? 1 : 0);
+    for (const w of WEAPONS) mix(t.ammo[w] ?? -1);
+  }
   for (const o of state.objects) {
     mix(OBJECT_KINDS.indexOf(o.kind));
     mixF(o.x);
