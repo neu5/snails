@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GRENADE_FUSE, HOMING_FUEL, SNAIL_R, activeSnail, createGame, girderSpot, hashState, step } from '../src/sim/game';
+import { GRENADE_FUSE, HOMING_FUEL, SNAIL_R, activeSnail, ammoLeft, createGame, girderSpot, hashState, step } from '../src/sim/game';
 import { isSolid } from '../src/sim/terrain';
 import { TurnRecorder, rebuild, type MatchRecord } from '../src/sim/turnlog';
 import { EMPTY_INPUT, WEAPONS, WEAPON_ROWS, type GameState, type InputFrame, type SimEvent, type WeaponId } from '../src/sim/types';
@@ -348,5 +348,98 @@ describe('change snail and surrender', () => {
     expect(state.teams[team].surrendered).toBe(true);
     expect(state.phase).toBe('gameover');
     expect(state.winner).toBe(1 - team);
+  });
+});
+
+describe('weapon ammo', () => {
+  /** Plays on with no input until it is `team`'s turn again. */
+  function nextTurnOf(state: GameState, team: number) {
+    const turn = state.turnNumber;
+    for (let i = 0; i < 20000 && (state.turnNumber === turn || state.activeTeam !== team || state.phase !== 'aiming'); i++) step(state, EMPTY_INPUT);
+    expect(state.activeTeam).toBe(team);
+  }
+
+  it('teams start with the default limits; the rest is unlimited', () => {
+    const state = ready();
+    for (const t of state.teams) {
+      expect(t.ammo).toEqual({ homing: 1, cluster: 2, kamikaze: 1, mine: 4, dynamite: 1, drill: 4, torch: 4, girder: 2, rope: 4, select: 1 });
+      expect(ammoLeft(t, 'bazooka')).toBe(Infinity);
+    }
+    // Each team has its own count.
+    state.teams[0].ammo.mine = 0;
+    expect(state.teams[1].ammo.mine).toBe(4);
+  });
+
+  it('using a weapon takes one; at zero it cannot be picked or fired', () => {
+    const state = ready();
+    const team = state.activeTeam;
+    select(state, 'dynamite');
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(state.teams[team].ammo.dynamite).toBe(0);
+    nextTurnOf(state, team);
+    // Out of dynamite: back to a weapon that has some left.
+    expect(state.teams[team].weapon).toBe('bazooka');
+    step(state, { ...EMPTY_INPUT, weapon: WEAPONS.indexOf('dynamite') + 1 });
+    expect(state.teams[team].weapon).toBe('bazooka');
+    // Even if it is in hand somehow, Space does nothing.
+    state.teams[team].weapon = 'dynamite';
+    const events = step(state, { ...EMPTY_INPUT, fire: true });
+    expect(events.some((e) => e.type === 'fire')).toBe(false);
+    expect(state.objects.some((o) => o.kind === 'dynamite')).toBe(false);
+  });
+
+  it('unlimited weapons never run out, and the gun counts its two shots as one use', () => {
+    const state = ready();
+    state.teams[state.activeTeam].ammo.gun = 3;
+    select(state, 'gun');
+    step(state, { ...EMPTY_INPUT, fire: true });
+    step(state, EMPTY_INPUT);
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(state.teams[state.activeTeam].ammo.gun).toBe(2);
+    expect(state.teams[state.activeTeam].ammo.bazooka).toBeUndefined();
+  });
+
+  it('change costs one per turn, going round the team in that turn is free', () => {
+    const state = ready();
+    const team = state.activeTeam;
+    select(state, 'select');
+    step(state, { ...EMPTY_INPUT, fire: true });
+    step(state, EMPTY_INPUT);
+    const second = activeSnail(state)!;
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(activeSnail(state)).not.toBe(second);
+    expect(state.teams[team].ammo.select).toBe(0);
+    nextTurnOf(state, team);
+    const now = activeSnail(state)!;
+    state.teams[team].weapon = 'select';
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(activeSnail(state)).toBe(now);
+  });
+
+  it('rope costs one per turn however many throws, and none are left after four turns', () => {
+    const state = ready();
+    const team = state.activeTeam;
+    for (let turn = 0; turn < 4; turn++) {
+      state.teams[team].weapon = 'rope';
+      activeSnail(state)!.aim = 80;
+      for (let i = 0; i < 3; i++) {
+        step(state, { ...EMPTY_INPUT, fire: true });
+        run(state, EMPTY_INPUT, 40);
+        if (state.rope) step(state, { ...EMPTY_INPUT, fire: true });
+        step(state, EMPTY_INPUT);
+      }
+      expect(state.teams[team].ammo.rope).toBe(3 - turn);
+      nextTurnOf(state, team);
+    }
+    expect(state.teams[team].weapon).not.toBe('rope');
+    state.teams[team].weapon = 'rope';
+    step(state, { ...EMPTY_INPUT, fire: true });
+    expect(state.hook).toBeNull();
+  });
+
+  it('a config can set its own limits', () => {
+    const state = createGame({ seed: 3, ammo: { bazooka: 2 } });
+    expect(state.teams[0].ammo).toEqual({ bazooka: 2 });
+    expect(ammoLeft(state.teams[0], 'dynamite')).toBe(Infinity);
   });
 });

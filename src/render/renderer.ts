@@ -1,4 +1,4 @@
-import { GIRDER_LEN, HOMING_FUEL, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { GIRDER_LEN, HOMING_FUEL, MAP_H, ammoLeft, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
 import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
@@ -1192,7 +1192,11 @@ export class Renderer {
     if (!this.menuOpen) return { used: false, weapon: 0 };
     this.menuOpen = false;
     this.hoverOpen = false;
-    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(WEAPONS[i], true))) return { used: true, weapon: i + 1 };
+    const team = state.teams[state.activeTeam];
+    for (let i = 0; i < WEAPONS.length; i++) {
+      // A used-up weapon cannot be picked; the tap just closes the menu.
+      if (inside(this.menuTile(WEAPONS[i], true))) return { used: true, weapon: team && ammoLeft(team, WEAPONS[i]) === 0 ? 0 : i + 1 };
+    }
     // A tap anywhere else just closes the menu.
     return { used: true, weapon: 0 };
   }
@@ -1222,6 +1226,8 @@ export class Renderer {
     ctx.lineWidth = 2.5 * k;
     ctx.stroke();
     drawWeaponIcon(ctx, current, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
+    const left = ammoLeft(state.teams[state.activeTeam], current);
+    if (left !== Infinity) drawAmmo(ctx, left, t.x + t.size - 3 * k, t.y + 3 * k, k);
     // A small arrow says it opens.
     if (!locked) {
       ctx.fillStyle = '#fffc';
@@ -1257,9 +1263,12 @@ export class Renderer {
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ddd';
     ctx.fillText('Pick a weapon', o.x + MENU_PAD * k, o.y + 18 * k);
+    const team = state.teams[state.activeTeam];
     WEAPONS.forEach((id) => {
       const t = this.menuTile(id);
       const on = id === current;
+      const left = team ? ammoLeft(team, id) : Infinity;
+      ctx.globalAlpha = left === 0 ? 0.3 : 1;
       ctx.fillStyle = on ? '#ffffff22' : '#ffffff0d';
       roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
       ctx.fill();
@@ -1273,6 +1282,8 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.fillStyle = '#ddd';
       ctx.fillText(WEAPON_NAMES[id], t.x + t.size / 2, t.y + t.size - 4 * k);
+      if (left !== Infinity) drawAmmo(ctx, left, t.x + t.size - 3 * k, t.y + 3 * k, k);
+      ctx.globalAlpha = 1;
     });
   }
 
@@ -1695,6 +1706,20 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       break;
   }
   ctx.restore();
+}
+
+/** Uses left, as a small number badge with its top-right corner at (x, y). */
+function drawAmmo(ctx: CanvasRenderingContext2D, n: number, x: number, y: number, k: number): void {
+  const text = String(n);
+  ctx.font = `bold ${Math.round(9 * k)}px Verdana, Arial, Helvetica, sans-serif`;
+  const w = Math.max(12 * k, ctx.measureText(text).width + 6 * k);
+  const h = 12 * k;
+  ctx.fillStyle = n === 0 ? '#555' : '#ffd166';
+  roundRect(ctx, x - w, y, w, h, 6 * k);
+  ctx.fill();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, x - w / 2, y + 9 * k);
 }
 
 /** A white flag on a stick, the stick's foot at (x, y). */

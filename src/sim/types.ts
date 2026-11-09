@@ -178,6 +178,8 @@ export interface Team {
   weapon: WeaponId;
   /** Gave up: out of the game, its snails wave white flags. */
   surrendered: boolean;
+  /** Uses left of the limited weapons (copied from the config); unlisted ones are unlimited. */
+  ammo: Ammo;
 }
 
 /** A cluster bomb bursts into bomblets, which go off on impact. */
@@ -203,7 +205,11 @@ export interface GameConfig {
   snailsPerTeam: number;
   startHp: number;
   turnSeconds: number;
+  /** Uses of each weapon a team starts with; a weapon not listed is unlimited. */
+  ammo: Ammo;
 }
+
+export type Ammo = Partial<Record<WeaponId, number>>;
 
 export interface GameState {
   config: GameConfig;
@@ -237,6 +243,11 @@ export interface GameState {
   /** Where the active snail stood when it got the turn; once it leaves, `moved` stays set. */
   startSpot: Point;
   moved: boolean;
+  /**
+   * Limited weapons already paid for this turn: using one again in the same turn is free
+   * (the gun's second shot, another rope throw, going on round the team with Change).
+   */
+  paid: WeaponId[];
   kamikaze: Kamikaze | null;
   /** The active snail floats down under a parachute. */
   parachute: boolean;

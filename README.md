@@ -71,7 +71,11 @@ again, even in mid-air, shoots a new rope. The rope bends around corners. Roping
 shot: the turn goes on, so you can swing somewhere and then pick a weapon. Swing fast into
 another snail to knock it away (into the water, or off a cliff for a painful fall).
 
-Each team keeps its last weapon between turns. Ammo is unlimited for now.
+Each team keeps its last weapon between turns. Some weapons have limited uses per team (the
+config's `ammo`; anything not listed is unlimited). The menu shows a number on those, and dims
+a used-up one so it cannot be picked. Default limits: Homing 1, Cluster 2, Kamikaze 1, Mine 4,
+Dynamite 1, Drill 4, Blowtorch 4, Platform 2, Rope 4, Change 1. A use covers a whole turn:
+throwing the rope again, the gun's second shot or going on round the team with Change is free.
 
 On a phone, hold it sideways: on-screen buttons appear for walking, aiming, jumping and
 firing; tap the weapon box to slide out the weapon drawer, then tap a weapon. The top row has replay last move, skip replay, new map,
