@@ -1,4 +1,4 @@
-import { GIRDER_LEN, HOMING_FUEL, MAP_H, ammoLeft, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { GIRDER_LEN, girderBlocked, HOMING_FUEL, MAP_H, ammoLeft, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
 import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
@@ -823,12 +823,13 @@ export class Renderer {
   }
 
   /** Where a platform would go, drawn as an outline while aiming. */
-  private drawGirderGhost(ctx: CanvasRenderingContext2D, s: Snail): void {
+  private drawGirderGhost(ctx: CanvasRenderingContext2D, state: GameState, s: Snail): void {
     const g = girderSpot(s);
+    const blocked = girderBlocked(state, s);
     ctx.save();
     ctx.translate(g.x, g.y);
     ctx.rotate(Math.atan2(g.uy, g.ux));
-    ctx.strokeStyle = '#ffffffaa';
+    ctx.strokeStyle = blocked ? '#ff4d4dcc' : '#ffffffaa';
     ctx.setLineDash([5, 4]);
     ctx.lineWidth = 1.5;
     ctx.strokeRect(-GIRDER_LEN / 2, -4, GIRDER_LEN, 8);
@@ -844,7 +845,7 @@ export class Renderer {
     // Mines, dynamite and the drill need no aim.
     if (NO_AIM.has(weapon)) return;
     if (weapon === 'girder') {
-      this.drawGirderGhost(ctx, s);
+      this.drawGirderGhost(ctx, state, s);
       return;
     }
     const [dx, dy] = aimVector(s);
