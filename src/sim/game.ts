@@ -839,6 +839,12 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
       selectNextSnail(state, s, events);
       return;
     }
+  } else if (w === 'girder') {
+    // Not over a snail: the outline turns red and Space does nothing.
+    if (input.fire && !state.prevInput.fire && !girderBlocked(state, s)) {
+      useWeapon(state, s, w, events);
+      return;
+    }
   } else if (w === 'homing') {
     // Nowhere to go until a target is picked.
     if (input.fire && !state.prevInput.fire && state.target) {
@@ -965,6 +971,23 @@ function melee(state: GameState, s: Snail, poke: boolean, events: SimEvent[]): v
 export function girderSpot(s: Snail): { x: number; y: number; ux: number; uy: number } {
   const [dx, dy] = aimVector(s);
   return { x: s.x + dx * GIRDER_REACH, y: s.y + dy * GIRDER_REACH, ux: dx, uy: dy };
+}
+
+/** Gap a platform must keep from every snail (px past its body). */
+const GIRDER_GAP = 2;
+
+/** True if the platform would go over (or right up against) a living snail, the user included. */
+export function girderBlocked(state: GameState, s: Snail): boolean {
+  const g = girderSpot(s);
+  return state.snails.some((o) => {
+    if (!o.alive) return false;
+    // Distance from the snail to the platform's rectangle, in the platform's own axes.
+    const dx = o.x - g.x;
+    const dy = o.y - g.y;
+    const along = Math.max(0, Math.abs(dx * g.ux + dy * g.uy) - GIRDER_LEN / 2);
+    const across = Math.max(0, Math.abs(-dx * g.uy + dy * g.ux) - GIRDER_THICK / 2);
+    return along * along + across * across < (SNAIL_R + GIRDER_GAP) ** 2;
+  });
 }
 
 function placeGirder(state: GameState, s: Snail): void {

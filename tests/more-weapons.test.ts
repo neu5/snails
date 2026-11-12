@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GRENADE_FUSE, HOMING_FUEL, SNAIL_R, activeSnail, ammoLeft, createGame, girderSpot, hashState, step } from '../src/sim/game';
+import { GRENADE_FUSE, HOMING_FUEL, SNAIL_R, activeSnail, ammoLeft, createGame, girderBlocked, girderSpot, hashState, step } from '../src/sim/game';
 import { isSolid } from '../src/sim/terrain';
 import { TurnRecorder, rebuild, type MatchRecord } from '../src/sim/turnlog';
 import { EMPTY_INPUT, WEAPONS, WEAPON_ROWS, type GameState, type InputFrame, type SimEvent, type WeaponId } from '../src/sim/types';
@@ -115,6 +115,29 @@ describe('more weapons', () => {
     step(state, fire);
     expect(state.terrain.data[Math.floor(g.y) * state.terrain.w + Math.floor(g.x)]).toBe(2);
     expect(isSolid(state.terrain, me.x, me.y)).toBe(false);
+    expect(state.phase).toBe('retreat');
+  });
+
+  it('platform cannot be placed over a snail', () => {
+    const state = ready();
+    select(state, 'girder');
+    const me = activeSnail(state)!;
+    me.aim = 0;
+    const other = state.snails.find((s) => s !== me)!;
+    const g = girderSpot(me);
+    other.x = g.x + g.ux * 30;
+    other.y = g.y + 4;
+    const before = state.terrain.version;
+    expect(girderBlocked(state, me)).toBe(true);
+    step(state, fire);
+    expect(state.terrain.version).toBe(before);
+    expect(state.phase).toBe('aiming');
+    expect(state.teams[state.activeTeam].ammo.girder).toBe(2);
+    // Aimed away from it, the platform goes down.
+    other.x = me.x - me.facing * 300;
+    expect(girderBlocked(state, me)).toBe(false);
+    step(state, EMPTY_INPUT);
+    step(state, fire);
     expect(state.phase).toBe('retreat');
   });
 
