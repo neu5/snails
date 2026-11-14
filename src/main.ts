@@ -2,6 +2,7 @@ import { Bot } from './ai/bot';
 import { Sound } from './audio/sound';
 import { KeyboardInput } from './input/keyboard';
 import { addTouchControls } from './input/touch';
+import { MAX_SNAILS_PER_TEAM, modeConfig, showTestLobby } from './lobby/test-lobby';
 import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store';
 import { Renderer, TEAM_COLORS, VIEW_H, VIEW_W } from './render/renderer';
 import { DEFAULT_CONFIG, TICK_RATE, createGame } from './sim/game';
@@ -22,13 +23,16 @@ const matchId = params.get('match') ?? 'default';
 const store: MatchStore = asyncPlay ? new LocalMatchStore() : new MemoryMatchStore();
 const isLocal = (team: number): boolean => !asyncPlay || team === myTeam || botTeams.has(team);
 
+/** ?test=1 shows the test lobby instead of a game. */
+const inLobby = params.has('test');
+
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const renderer = new Renderer(canvas);
 const keyboard = new KeyboardInput();
 /** Phones and tablets get on-screen buttons; ?touch=1 forces them on a desktop. */
 const touch = params.get('touch') === '1' || matchMedia('(pointer: coarse)').matches;
 renderer.touch = touch;
-if (touch) addTouchControls(keyboard);
+if (touch && !inLobby) addTouchControls(keyboard);
 
 // Grow the HUD when the canvas is drawn small so its text stays readable.
 function fitUi(): void {
@@ -120,12 +124,13 @@ let mode: Mode = { kind: 'waiting' };
 let bots = new Map<number, Bot>();
 
 function configFromUrl(seed: number): Partial<GameConfig> {
-  const cfg: Partial<GameConfig> = { seed };
+  // ?mode=infinite: no weapon limits.
+  const cfg: Partial<GameConfig> = { seed, ...modeConfig(params.get('mode')) };
   const hp = num('hp');
   const per = num('snails');
   const turn = num('turn');
   if (hp) cfg.startHp = hp;
-  if (per) cfg.snailsPerTeam = Math.max(1, Math.min(4, per));
+  if (per) cfg.snailsPerTeam = Math.max(1, Math.min(MAX_SNAILS_PER_TEAM, per));
   if (turn) cfg.turnSeconds = turn;
   return cfg;
 }
@@ -294,6 +299,10 @@ keyboard.bind('KeyR', () => {
   if (!asyncPlay || state.phase === 'gameover') void newMatch(Math.floor(Math.random() * 1e9));
 });
 keyboard.bind('KeyP', watchLastTurn);
+// Back to the test lobby from a game it started.
+keyboard.bind('KeyL', () => {
+  if (params.get('lobby') === 'test') location.search = '?test=1';
+});
 keyboard.bind('KeyM', () => renderer.toggleOverview());
 keyboard.bind('KeyC', () => renderer.recenter());
 keyboard.bind('Escape', () => {
@@ -386,6 +395,13 @@ function frame(now: number): void {
 };
 
 void (async () => {
+  if (inLobby) {
+    canvas.style.display = 'none';
+    // The lobby works upright too.
+    document.getElementById('rotate')?.remove();
+    showTestLobby();
+    return;
+  }
   const saved = asyncPlay ? await store.load(matchId) : null;
   if (saved) open(saved);
   else await newMatch();
