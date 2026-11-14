@@ -1,3 +1,6 @@
+import { GRAVES, drawGrave } from '../render/graves';
+import { TEAM_COLORS } from '../render/renderer';
+import { TEAM_NAMES } from '../sim/game';
 import type { GameConfig } from '../sim/types';
 
 /** default: the usual weapon limits. infinite: every weapon unlimited, for trying things out. */
@@ -12,6 +15,12 @@ export const MAX_SNAILS_PER_TEAM = 4;
 
 /** Starting HP choices in the lobby. */
 export const START_HP = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+
+/** Each team's grave from `?graves=1,4`; anything missing or unknown is the first one. */
+export function gravesFromUrl(value: string | null): number[] {
+  const picked = (value ?? '').split(',').map(Number);
+  return TEAM_NAMES.map((_, i) => (Number.isInteger(picked[i]) && picked[i] >= 0 && picked[i] < GRAVES.length ? picked[i] : 0));
+}
 
 /** What a mode changes in the game config (`?mode=` in the URL). */
 export function modeConfig(mode: string | null): Partial<GameConfig> {
@@ -39,15 +48,18 @@ const CSS = `
 .lobby .snails button, .lobby .hp button { width: 48px; font-weight: bold; padding: 10px 0; }
 /* Two even rows of five. */
 .lobby .hp { max-width: 272px; }
+.lobby .graves button { width: 48px; height: 52px; padding: 0; }
+.lobby .graves canvas { display: block; margin: 0 auto; }
+.lobby h2.team { margin-top: 10px; }
 .lobby .start { margin-top: 22px; width: 100%; background: #c4571c; font-weight: bold; font-size: 17px; }
 `;
 
 /**
- * Test lobby (`?test=1`): pick snails per team, starting HP and a game mode, then start a hot-seat game
+ * Test lobby (`?test=1`): pick snails per team, starting HP, a game mode and each team's grave, then start a hot-seat game
  * with those settings in the URL. Choices are remembered for next time.
  */
 export function showTestLobby(): void {
-  let choice = { snails: 3, hp: 100, mode: 'default' as GameMode };
+  let choice = { snails: 3, hp: 100, mode: 'default' as GameMode, graves: [0, 0] };
   try {
     choice = { ...choice, ...JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') };
   } catch {
@@ -67,7 +79,13 @@ export function showTestLobby(): void {
     } catch {
       // Not remembered; fine.
     }
-    const url = new URLSearchParams({ snails: String(choice.snails), hp: String(choice.hp), mode: choice.mode, lobby: 'test' });
+    const url = new URLSearchParams({
+      snails: String(choice.snails),
+      hp: String(choice.hp),
+      mode: choice.mode,
+      graves: choice.graves.join(','),
+      lobby: 'test',
+    });
     location.search = url.toString();
   };
 
@@ -77,15 +95,33 @@ export function showTestLobby(): void {
     card.className = 'lobby-card';
     card.innerHTML = '<h1>Test game</h1><p class="sub">Hot-seat on this screen. L in the game comes back here.</p>';
 
-    const pick = (title: string, cls: string, items: { label: string; note?: string; on: boolean; set: () => void }[]) => {
+    type Item = { label: string; note?: string; on: boolean; set: () => void; paint?: (ctx: CanvasRenderingContext2D) => void };
+    const pick = (title: string, cls: string, items: Item[], color?: string) => {
       const h = document.createElement('h2');
       h.textContent = title;
+      if (color) {
+        h.className = 'team';
+        h.style.color = color;
+      }
       const row = document.createElement('div');
       row.className = `row ${cls}`;
       for (const it of items) {
         const b = document.createElement('button');
         b.className = it.on ? 'on' : '';
-        b.textContent = it.label;
+        if (it.paint) {
+          // A small picture instead of text; the name is for screen readers and the tooltip.
+          const c = document.createElement('canvas');
+          c.width = c.height = 40 * devicePixelRatio;
+          c.style.width = c.style.height = '40px';
+          const ctx = c.getContext('2d')!;
+          ctx.scale(devicePixelRatio, devicePixelRatio);
+          it.paint(ctx);
+          b.append(c);
+          b.title = it.label;
+          b.setAttribute('aria-label', it.label);
+        } else {
+          b.textContent = it.label;
+        }
         if (it.note) {
           const n = document.createElement('small');
           n.textContent = it.note;
@@ -118,6 +154,19 @@ export function showTestLobby(): void {
       'Game',
       'modes',
       GAME_MODES.map((m) => ({ label: m.name, note: m.note, on: choice.mode === m.id, set: () => (choice.mode = m.id) })),
+    );
+    TEAM_NAMES.forEach((team, t) =>
+      pick(
+        `${team}: grave`,
+        'graves',
+        GRAVES.map((name, g) => ({
+          label: name,
+          on: choice.graves[t] === g,
+          set: () => (choice.graves[t] = g),
+          paint: (ctx) => drawGrave(ctx, g, 20, 33, 1.6),
+        })),
+        TEAM_COLORS[t],
+      ),
     );
 
     const go = document.createElement('button');

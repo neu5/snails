@@ -81,7 +81,8 @@ On a phone, hold it sideways: on-screen buttons appear for walking, aiming, jump
 firing; tap the weapon box to slide out the weapon drawer, then tap a weapon. The top row has replay last move, skip replay, new map,
 whole map (🗺) and full screen. Drag the map with one finger, pinch to zoom. `?touch=1` shows the buttons on a desktop too.
 
-Test lobby: open `?test=1` to pick snails per team (1-4), starting HP (10-100) and the game: **Default** (weapon
+Test lobby: open `?test=1` to pick snails per team (1-4), starting HP (10-100), each team's grave
+(Shell, Stone, Cross, Daisy, Toadstool, Urn; also `?graves=1,4`) and the game: **Default** (weapon
 limits) or **Infinite** (no limits), then Start (or Enter). In a game started from there, L
 goes back to the lobby; R gives a new map with the same settings.
 

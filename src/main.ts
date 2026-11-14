@@ -2,7 +2,7 @@ import { Bot } from './ai/bot';
 import { Sound } from './audio/sound';
 import { KeyboardInput } from './input/keyboard';
 import { addTouchControls } from './input/touch';
-import { MAX_SNAILS_PER_TEAM, modeConfig, showTestLobby } from './lobby/test-lobby';
+import { MAX_SNAILS_PER_TEAM, gravesFromUrl, modeConfig, showTestLobby } from './lobby/test-lobby';
 import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store';
 import { Renderer, TEAM_COLORS, VIEW_H, VIEW_W } from './render/renderer';
 import { DEFAULT_CONFIG, TICK_RATE, createGame } from './sim/game';
@@ -132,6 +132,7 @@ function configFromUrl(seed: number): Partial<GameConfig> {
   if (hp) cfg.startHp = hp;
   if (per) cfg.snailsPerTeam = Math.max(1, Math.min(MAX_SNAILS_PER_TEAM, per));
   if (turn) cfg.turnSeconds = turn;
+  if (params.has('graves')) cfg.graves = gravesFromUrl(params.get('graves'));
   return cfg;
 }
 

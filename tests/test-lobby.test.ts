@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { START_HP, modeConfig } from '../src/lobby/test-lobby';
+import { START_HP, gravesFromUrl, modeConfig } from '../src/lobby/test-lobby';
+import { GRAVES } from '../src/render/graves';
 import { ammoLeft, createGame } from '../src/sim/game';
 import { WEAPONS } from '../src/sim/types';
 
@@ -28,5 +29,13 @@ describe('test lobby game modes', () => {
       const state = createGame({ seed: 4, startHp: hp });
       expect(state.snails.every((s) => s.hp === hp)).toBe(true);
     }
+  });
+
+  it('graves come from the URL, one per team, with bad values falling back to the first', () => {
+    expect(gravesFromUrl('2,5')).toEqual([2, 5]);
+    expect(gravesFromUrl('4')).toEqual([4, 0]);
+    expect(gravesFromUrl('9,-1')).toEqual([0, 0]);
+    expect(gravesFromUrl(null)).toEqual([0, 0]);
+    expect(GRAVES).toHaveLength(6);
   });
 });

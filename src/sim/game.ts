@@ -132,7 +132,7 @@ const HOMING_SWAY = 0.1;
 const HOMING_SWAY_RATE = 0.14;
 const HOMING_REACH = 12;
 
-const TEAM_NAMES = ['Garden Gliders', 'Mossback Raiders'];
+export const TEAM_NAMES = ['Garden Gliders', 'Mossback Raiders'];
 const SNAIL_NAMES = [
   ['Pebble', 'Slick', 'Dewdrop', 'Clover'],
   ['Grub', 'Mudlark', 'Spiral', 'Thistle'],
@@ -144,6 +144,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   startHp: 100,
   turnSeconds: 30,
   ammo: { homing: 1, cluster: 2, kamikaze: 1, mine: 4, dynamite: 1, drill: 4, torch: 4, girder: 2, rope: 4, select: 1 },
+  graves: [0, 0],
 };
 
 const CIRCLE_OFFSETS: [number, number][] = (() => {

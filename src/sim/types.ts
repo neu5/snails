@@ -207,6 +207,8 @@ export interface GameConfig {
   turnSeconds: number;
   /** Uses of each weapon a team starts with; a weapon not listed is unlimited. */
   ammo: Ammo;
+  /** Each team's grave marker (an index into the renderer's GRAVES); looks only. */
+  graves: number[];
 }
 
 export type Ammo = Partial<Record<WeaponId, number>>;
