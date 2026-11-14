@@ -516,6 +516,7 @@ function explode(state: GameState, x: number, y: number, blast: Blast, events: S
   carveCircle(state.terrain, x, y, blast.terrainR);
   events.push({ type: 'explosion', x, y, r: blast.terrainR });
   for (const s of state.snails) {
+    // Graves stay put; they only fall if the ground under them goes.
     if (!s.alive) continue;
     const dx = s.x - x;
     const dy = s.y - y;
@@ -648,7 +649,7 @@ function updateSnailPhysics(state: GameState, s: Snail, events: SimEvent[]): voi
     if (snailHitsTerrain(t, s.x, ny)) {
       if (s.vy > 0) {
         const impact = s.vy;
-        if (impact > SAFE_FALL_SPEED) {
+        if (impact > SAFE_FALL_SPEED && s.alive) {
           const dmg = Math.round((impact - SAFE_FALL_SPEED) * FALL_DAMAGE_PER_SPEED);
           s.hp -= dmg;
           events.push({ type: 'damage', snailId: s.id, amount: dmg });
@@ -674,9 +675,13 @@ function updateSnailPhysics(state: GameState, s: Snail, events: SimEvent[]): voi
   }
 
   if (s.y > WATER_Y + SNAIL_R) {
+    s.grounded = false;
+    if (!s.alive) {
+      events.push({ type: 'splash', x: s.x });
+      return;
+    }
     s.alive = false;
     s.hp = 0;
-    s.grounded = false;
     events.push({ type: 'drown', snailId: s.id }, { type: 'splash', x: s.x });
   }
 }
@@ -1224,7 +1229,8 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
 
   updateObjects(state, events);
   for (const s of state.snails) {
-    if (!s.alive) continue;
+    // A grave falls and slides like any object until it sinks.
+    if (!s.alive && s.y > WATER_Y + SNAIL_R) continue;
     if (s.id === state.activeSnailId && state.kamikaze) continue;
     if (state.rope && s.id === state.activeSnailId) ropePhysics(state, s, events);
     else updateSnailPhysics(state, s, events);

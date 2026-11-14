@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { GRENADE_FUSE, HOMING_FUEL, SNAIL_R, activeSnail, ammoLeft, createGame, girderBlocked, girderSpot, hashState, step } from '../src/sim/game';
-import { isSolid } from '../src/sim/terrain';
+import { GRENADE_FUSE, HOMING_FUEL, SNAIL_R, WATER_Y, activeSnail, ammoLeft, createGame, girderBlocked, girderSpot, hashState, step } from '../src/sim/game';
+import { carveCircle, isSolid } from '../src/sim/terrain';
 import { TurnRecorder, rebuild, type MatchRecord } from '../src/sim/turnlog';
 import { EMPTY_INPUT, WEAPONS, WEAPON_ROWS, type GameState, type InputFrame, type SimEvent, type WeaponId } from '../src/sim/types';
 
@@ -466,3 +466,47 @@ describe('weapon ammo', () => {
     expect(ammoLeft(state.teams[0], 'dynamite')).toBe(Infinity);
   });
 });
+
+describe('graves', () => {
+  function grave() {
+    const state = ready();
+    const me = activeSnail(state)!;
+    const dead = state.snails.find((s) => s.team !== me.team)!;
+    dead.alive = false;
+    dead.hp = 0;
+    return { state, dead };
+  }
+
+  it('a grave falls when the ground under it goes', () => {
+    const { state, dead } = grave();
+    const y = dead.y;
+    carveCircle(state.terrain, dead.x, dead.y + 30, 40);
+    run(state, EMPTY_INPUT, 120);
+    expect(dead.y).toBeGreaterThan(y + 30);
+    expect(dead.grounded).toBe(true);
+    expect(dead.alive).toBe(false);
+  });
+
+  it('a blast does not push a grave, it only drops into the crater', () => {
+    const { state, dead } = grave();
+    const { x, y } = dead;
+    state.objects.push({ kind: 'dynamite', x: dead.x - 25, y: dead.y, vx: 0, vy: 0, age: 0, ownerId: 0, fuse: 1, resting: true });
+    const events = run(state, EMPTY_INPUT, 120);
+    expect(events.some((e) => e.type === 'explosion')).toBe(true);
+    expect(dead.x).toBe(x);
+    expect(dead.y).toBeGreaterThan(y);
+    expect(events.some((e) => (e.type === 'damage' || e.type === 'drown' || e.type === 'death') && e.snailId === dead.id)).toBe(false);
+  });
+
+  it('a grave dropped in the sea sinks quietly', () => {
+    const { state, dead } = grave();
+    dead.x = 5;
+    dead.y = WATER_Y - 40;
+    dead.grounded = false;
+    const events = run(state, EMPTY_INPUT, 120);
+    expect(dead.y).toBeGreaterThan(WATER_Y);
+    expect(events.filter((e) => e.type === 'splash')).toHaveLength(1);
+    expect(events.some((e) => e.type === 'drown')).toBe(false);
+  });
+});
+
