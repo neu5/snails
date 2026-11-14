@@ -1,5 +1,6 @@
 import { GIRDER_LEN, girderBlocked, HOMING_FUEL, MAP_H, ammoLeft, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
+import { drawGrave } from './graves';
 import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
 /** Canvas size; the camera shows part of the (bigger) map in it, or all of it zoomed out. */
@@ -476,18 +477,8 @@ export class Renderer {
 
   private drawSnail(ctx: CanvasRenderingContext2D, state: GameState, s: Snail): void {
     if (!s.alive) {
-      if (s.y < WATER_Y) {
-        // Empty shell marker.
-        ctx.fillStyle = '#8a8a8a';
-        ctx.beginPath();
-        ctx.arc(s.x, s.y + 2, 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#555';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(s.x, s.y + 2, 3, 0, Math.PI * 1.5);
-        ctx.stroke();
-      }
+      // The team's chosen grave, standing where the snail's foot was.
+      if (s.y < WATER_Y) drawGrave(ctx, state.config.graves?.[s.team] ?? 0, s.x, s.y + SNAIL_R);
       return;
     }
     const isActive = state.activeSnailId === s.id && state.phase !== 'gameover';
