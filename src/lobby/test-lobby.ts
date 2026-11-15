@@ -1,5 +1,5 @@
 import { GRAVES, drawGrave } from '../render/graves';
-import { TEAM_COLORS } from '../render/renderer';
+import { TEAM_PALETTE } from '../render/palette';
 import { TEAM_NAMES } from '../sim/game';
 import type { GameConfig } from '../sim/types';
 
@@ -165,7 +165,7 @@ export function showTestLobby(): void {
           set: () => (choice.graves[t] = g),
           paint: (ctx) => drawGrave(ctx, g, 20, 33, 1.6),
         })),
-        TEAM_COLORS[t],
+        TEAM_PALETTE[t].main,
       ),
     );
 

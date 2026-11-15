@@ -2,6 +2,7 @@ import { Rng, clamp, dcos, degToRad, dsin } from './math';
 import { carveCircle, fillBar, generateTerrain, isSolid, type Terrain } from './terrain';
 import {
   EMPTY_INPUT,
+  MAX_SNAILS_PER_TEAM,
   WEAPONS,
   type GameConfig,
   type GameState,
@@ -12,6 +13,7 @@ import {
   type Rope,
   type SimEvent,
   type Snail,
+  type TeamSetup,
   type Team,
   type WeaponId,
 } from './types';
@@ -133,10 +135,23 @@ const HOMING_SWAY_RATE = 0.14;
 const HOMING_REACH = 12;
 
 export const TEAM_NAMES = ['Garden Gliders', 'Mossback Raiders'];
-const SNAIL_NAMES = [
+/** Names for teams 3 and 4 when an online room does not name them. */
+const MORE_TEAM_NAMES = ['Leaf Lurkers', 'Slime Squad'];
+export const DEFAULT_SNAIL_NAMES = [
   ['Pebble', 'Slick', 'Dewdrop', 'Clover'],
   ['Grub', 'Mudlark', 'Spiral', 'Thistle'],
+  ['Fern', 'Puddle', 'Twig', 'Moss'],
+  ['Ooze', 'Sprout', 'Gloop', 'Nettle'],
 ];
+
+/** The teams that play when the config names none: the first `count` defaults. */
+export function defaultTeams(count = 2, snailsPerTeam = MAX_SNAILS_PER_TEAM): TeamSetup[] {
+  return [...TEAM_NAMES, ...MORE_TEAM_NAMES].slice(0, count).map((name, i) => ({
+    name,
+    color: i,
+    snailNames: DEFAULT_SNAIL_NAMES[i].slice(0, snailsPerTeam),
+  }));
+}
 
 export const DEFAULT_CONFIG: GameConfig = {
   seed: 1,
@@ -176,7 +191,8 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
   const terrain = generateTerrain(MAP_W, MAP_H, WATER_Y, rng);
 
   const snails: Snail[] = [];
-  const teamCount = 2;
+  const setup = config.teams ?? defaultTeams(2, config.snailsPerTeam);
+  const teamCount = setup.length;
   const total = config.snailsPerTeam * teamCount;
   const usedX: number[] = [];
   for (let i = 0; i < total; i++) {
@@ -196,7 +212,7 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     snails.push({
       id: i,
       team,
-      name: SNAIL_NAMES[team][Math.floor(i / teamCount) % SNAIL_NAMES[team].length],
+      name: setup[team].snailNames[Math.floor(i / teamCount)] ?? DEFAULT_SNAIL_NAMES[team % 4][Math.floor(i / teamCount) % 4],
       x,
       y,
       vx: 0,
@@ -216,7 +232,15 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     rng: rng.state,
     terrain,
     snails,
-    teams: TEAM_NAMES.slice(0, teamCount).map((name, id) => ({ id, name, nextIndex: 0, weapon: 'bazooka' as WeaponId, surrendered: false, ammo: { ...config.ammo } })),
+    teams: setup.map((t, id) => ({
+      id,
+      name: t.name,
+      color: t.color,
+      nextIndex: 0,
+      weapon: 'bazooka' as WeaponId,
+      surrendered: false,
+      ammo: { ...config.ammo },
+    })),
     activeTeam: 0,
     activeSnailId: 0,
     turnNumber: 0,
@@ -1532,6 +1556,7 @@ export function hashState(state: GameState): number {
   }
   for (const t of state.teams) {
     mix(WEAPONS.indexOf(t.weapon));
+    mix(t.color);
     mix(t.surrendered ? 1 : 0);
     for (const w of WEAPONS) mix(t.ammo[w] ?? -1);
   }
