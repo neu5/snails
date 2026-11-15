@@ -8,11 +8,13 @@ import {
   type GameState,
   type InputFrame,
   type ObjectKind,
+  type Point,
   type Projectile,
   type Rope,
   type SimEvent,
   type Snail,
   type TeamSetup,
+  type Team,
   type WeaponId,
 } from './types';
 
@@ -48,9 +50,10 @@ interface Blast {
   damage: number;
   knockback: number;
 }
-const OBJECT_KINDS: ObjectKind[] = ['shell', 'grenade', 'mine', 'dynamite', 'cluster', 'bomblet'];
+const OBJECT_KINDS: ObjectKind[] = ['shell', 'grenade', 'mine', 'dynamite', 'cluster', 'bomblet', 'homing'];
 export const BLASTS: Record<ObjectKind, Blast> = {
   shell: { terrainR: 34, damageR: 58, damage: 50, knockback: 6.5 },
+  homing: { terrainR: 30, damageR: 52, damage: 45, knockback: 6 },
   grenade: { terrainR: 30, damageR: 55, damage: 45, knockback: 6 },
   cluster: { terrainR: 24, damageR: 45, damage: 25, knockback: 5 },
   bomblet: { terrainR: 16, damageR: 34, damage: 18, knockback: 4 },
@@ -114,7 +117,26 @@ const BOUNCE = 0.45;
 const SETTLE_MIN_TICKS = 45;
 const SETTLE_MAX_TICKS = 600;
 
-const TEAM_NAMES = ['Garden Gliders', 'Mossback Raiders', 'Leaf Lurkers', 'Slime Squad'];
+/** Map targets are kept in cells this many px wide, so they fit in the turn log. */
+export const TARGET_GRID = 4;
+/** Launch speed; the missile then flies free for HOMING_LOCK ticks before it steers. */
+const HOMING_LAUNCH = 5;
+export const HOMING_LOCK = 20;
+/** Ticks of rocket; after that it drops like a shell. */
+export const HOMING_FUEL = 300;
+const HOMING_SPEED = 7;
+const HOMING_THRUST = 0.08;
+/** Pull toward the target, px/tick^2; it grows close by so the missile cannot circle it. */
+const HOMING_TURN = 0.35;
+const HOMING_TURN_NEAR = 150;
+/** A slow side-to-side sway, so it does not fly like a ruler. */
+const HOMING_SWAY = 0.1;
+const HOMING_SWAY_RATE = 0.14;
+const HOMING_REACH = 12;
+
+export const TEAM_NAMES = ['Garden Gliders', 'Mossback Raiders'];
+/** Names for teams 3 and 4 when an online room does not name them. */
+const MORE_TEAM_NAMES = ['Leaf Lurkers', 'Slime Squad'];
 export const DEFAULT_SNAIL_NAMES = [
   ['Pebble', 'Slick', 'Dewdrop', 'Clover'],
   ['Grub', 'Mudlark', 'Spiral', 'Thistle'],
@@ -124,7 +146,7 @@ export const DEFAULT_SNAIL_NAMES = [
 
 /** The teams that play when the config names none: the first `count` defaults. */
 export function defaultTeams(count = 2, snailsPerTeam = MAX_SNAILS_PER_TEAM): TeamSetup[] {
-  return TEAM_NAMES.slice(0, count).map((name, i) => ({
+  return [...TEAM_NAMES, ...MORE_TEAM_NAMES].slice(0, count).map((name, i) => ({
     name,
     color: i,
     snailNames: DEFAULT_SNAIL_NAMES[i].slice(0, snailsPerTeam),
@@ -136,6 +158,8 @@ export const DEFAULT_CONFIG: GameConfig = {
   snailsPerTeam: 3,
   startHp: 100,
   turnSeconds: 30,
+  ammo: { homing: 1, cluster: 2, kamikaze: 1, mine: 4, dynamite: 1, drill: 4, torch: 4, girder: 2, rope: 4, select: 1 },
+  graves: [0, 0],
 };
 
 const CIRCLE_OFFSETS: [number, number][] = (() => {
@@ -208,7 +232,15 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     rng: rng.state,
     terrain,
     snails,
-    teams: setup.map((t, id) => ({ id, name: t.name, color: t.color, nextIndex: 0, weapon: 'bazooka' as WeaponId })),
+    teams: setup.map((t, id) => ({
+      id,
+      name: t.name,
+      color: t.color,
+      nextIndex: 0,
+      weapon: 'bazooka' as WeaponId,
+      surrendered: false,
+      ammo: { ...config.ammo },
+    })),
     activeTeam: 0,
     activeSnailId: 0,
     turnNumber: 0,
@@ -222,6 +254,10 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     jumpTicks: 0,
     rope: null,
     hook: null,
+    target: null,
+    startSpot: { x: 0, y: 0 },
+    moved: false,
+    paid: [],
     kamikaze: null,
     parachute: false,
     objects: [],
@@ -277,6 +313,12 @@ function startTurn(state: GameState, team: number, events: SimEvent[]): void {
   state.dig = null;
   state.rope = null;
   state.hook = null;
+  state.target = null;
+  state.startSpot = { x: pick.x, y: pick.y };
+  state.moved = false;
+  state.paid = [];
+  // A weapon used up last time is no longer in hand.
+  if (ammoLeft(t, t.weapon) === 0) t.weapon = WEAPONS.find((w) => ammoLeft(t, w) > 0) ?? t.weapon;
   state.kamikaze = null;
   state.parachute = false;
   // Only mines outlive a turn; anything else still around timed out while settling.
@@ -294,7 +336,7 @@ function finishTurn(state: GameState, events: SimEvent[]): void {
       events.push({ type: 'death', snailId: s.id });
     }
   }
-  const aliveTeams = state.teams.filter((t) => state.snails.some((s) => s.alive && s.team === t.id));
+  const aliveTeams = state.teams.filter((t) => !t.surrendered && state.snails.some((s) => s.alive && s.team === t.id));
   if (aliveTeams.length <= 1) {
     state.phase = 'gameover';
     state.winner = aliveTeams.length === 1 ? aliveTeams[0].id : -1;
@@ -312,7 +354,7 @@ export function aimVector(s: Snail): [number, number] {
   return [s.facing * dcos(a), -dsin(a)];
 }
 
-export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grenade' | 'cluster' = 'shell'): Projectile {
+export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grenade' | 'cluster' | 'homing' = 'shell'): Projectile {
   const [dx, dy] = aimVector(s);
   const speed = MAX_LAUNCH_SPEED * Math.max(power, 0.05);
   return {
@@ -323,7 +365,7 @@ export function launchProjectile(s: Snail, power: number, kind: 'shell' | 'grena
     vy: dy * speed,
     age: 0,
     ownerId: s.id,
-    fuse: kind === 'shell' ? -1 : GRENADE_FUSE,
+    fuse: kind === 'shell' || kind === 'homing' ? -1 : GRENADE_FUSE,
     resting: false,
   };
 }
@@ -433,17 +475,44 @@ function burst(state: GameState, o: Projectile): void {
   }
 }
 
+const reached = (o: Projectile, t: Point) => (t.x - o.x) ** 2 + (t.y - o.y) ** 2 < HOMING_REACH * HOMING_REACH;
+
+/**
+ * The rocket's pull on the missile, if it is locked on and has fuel. It knows only where the
+ * target is: it heads straight there, and whatever stands in the way blows it up. Turning by
+ * a push, not by a set heading, gives it a curve; the sway keeps the line from being ruled.
+ */
+function steerHoming(o: Projectile, target: Point | null): boolean {
+  if (!target || o.age < HOMING_LOCK || o.age >= HOMING_FUEL) return false;
+  const speed = Math.sqrt(o.vx * o.vx + o.vy * o.vy) || 1;
+  const dx = target.x - o.x;
+  const dy = target.y - o.y;
+  const d = Math.sqrt(dx * dx + dy * dy) || 1;
+  const pull = HOMING_TURN * (1 + HOMING_TURN_NEAR / (d + 30));
+  const sway = dsin(o.age * HOMING_SWAY_RATE) * HOMING_SWAY;
+  const vx = o.vx + (dx / d) * pull - (o.vy / speed) * sway;
+  const vy = o.vy + (dy / d) * pull + (o.vx / speed) * sway;
+  const len = Math.sqrt(vx * vx + vy * vy) || 1;
+  const next = Math.min(HOMING_SPEED, speed + HOMING_THRUST);
+  o.vx = (vx / len) * next;
+  // advanceProjectile adds gravity next; the rocket cancels it.
+  o.vy = (vy / len) * next - PROJECTILE_GRAVITY;
+  return true;
+}
+
 function updateObjects(state: GameState, events: SimEvent[]): void {
   for (const o of [...state.objects]) {
     // An earlier explosion this tick may have removed it.
     if (!state.objects.includes(o)) continue;
-    if (o.kind === 'shell' || o.kind === 'bomblet') {
-      // Bomblets fly like shells but the wind does not carry them.
-      const res = advanceProjectile(o, state.terrain, state.snails, o.kind === 'shell' ? state.wind : 0);
-      if (!res) continue;
+    if (o.kind === 'shell' || o.kind === 'bomblet' || o.kind === 'homing') {
+      const homing = o.kind === 'homing' && steerHoming(o, state.target);
+      // Bomblets fly like shells but the wind does not carry them; nor does a steering rocket.
+      const res = advanceProjectile(o, state.terrain, state.snails, o.kind === 'bomblet' || homing ? 0 : state.wind);
+      const arrived = !res && homing && reached(o, state.target!);
+      if (!res && !arrived) continue;
       removeObject(state, o);
-      if (res.type === 'explode') explode(state, res.x, res.y, BLASTS[o.kind], events);
-      else if (res.y > WATER_Y) events.push({ type: 'splash', x: res.x });
+      if (arrived || res?.type === 'explode') explode(state, res?.x ?? o.x, res?.y ?? o.y, BLASTS[o.kind], events);
+      else if (res && res.y > WATER_Y) events.push({ type: 'splash', x: res.x });
       continue;
     }
     o.age++;
@@ -472,6 +541,7 @@ function explode(state: GameState, x: number, y: number, blast: Blast, events: S
   carveCircle(state.terrain, x, y, blast.terrainR);
   events.push({ type: 'explosion', x, y, r: blast.terrainR });
   for (const s of state.snails) {
+    // Graves stay put; they only fall if the ground under them goes.
     if (!s.alive) continue;
     const dx = s.x - x;
     const dy = s.y - y;
@@ -492,7 +562,7 @@ function explode(state: GameState, x: number, y: number, blast: Blast, events: S
   }
   // Toss nearby objects; mines caught in a blast go off shortly after.
   for (const o of state.objects) {
-    if (o.kind === 'shell') continue;
+    if (o.kind === 'shell' || o.kind === 'homing') continue;
     const dx = o.x - x;
     const dy = o.y - y;
     const d = Math.sqrt(dx * dx + dy * dy);
@@ -604,7 +674,7 @@ function updateSnailPhysics(state: GameState, s: Snail, events: SimEvent[]): voi
     if (snailHitsTerrain(t, s.x, ny)) {
       if (s.vy > 0) {
         const impact = s.vy;
-        if (impact > SAFE_FALL_SPEED) {
+        if (impact > SAFE_FALL_SPEED && s.alive) {
           const dmg = Math.round((impact - SAFE_FALL_SPEED) * FALL_DAMAGE_PER_SPEED);
           s.hp -= dmg;
           events.push({ type: 'damage', snailId: s.id, amount: dmg });
@@ -630,9 +700,13 @@ function updateSnailPhysics(state: GameState, s: Snail, events: SimEvent[]): voi
   }
 
   if (s.y > WATER_Y + SNAIL_R) {
+    s.grounded = false;
+    if (!s.alive) {
+      events.push({ type: 'splash', x: s.x });
+      return;
+    }
     s.alive = false;
     s.hp = 0;
-    s.grounded = false;
     events.push({ type: 'drown', snailId: s.id }, { type: 'splash', x: s.x });
   }
 }
@@ -687,6 +761,37 @@ function jump(state: GameState, s: Snail, vx: number, vy: number): void {
   state.jumpTicks = 0;
 }
 
+/** A snail this far (px) from where its turn began has moved, and can no longer hand the turn on. */
+const MOVED_BY = 1;
+
+/** Switches this turn to the next living snail of the team, if this one has not moved yet. */
+function selectNextSnail(state: GameState, s: Snail, events: SimEvent[]): void {
+  if (state.moved) {
+    events.push({ type: 'selectRefused', snailId: s.id });
+    return;
+  }
+  if (!s.grounded || state.rope || state.hook || state.parachute) return;
+  const members = teamSnails(state, s.team);
+  const start = members.indexOf(s);
+  for (let k = 1; k < members.length; k++) {
+    const next = members[(start + k) % members.length];
+    if (!next.alive) continue;
+    spend(state, 'select');
+    state.activeSnailId = next.id;
+    state.startSpot = { x: next.x, y: next.y };
+    next.hidden = false;
+    state.jumpTicks = 0;
+    events.push({ type: 'select', snailId: next.id });
+    return;
+  }
+}
+
+/** A map point on the grid the turn log stores, clamped to the map. */
+function snapTarget(p: Point): Point {
+  const cell = (v: number, max: number) => Math.floor(clamp(v, 0, max - 1) / TARGET_GRID) * TARGET_GRID;
+  return { x: cell(p.x, MAP_W), y: cell(p.y, MAP_H) };
+}
+
 function clampAim(w: WeaponId, aim: number): number {
   if (w === 'torch') return clamp(aim, -TORCH_AIM, TORCH_AIM);
   if (w === 'girder') return clamp(aim, -STEEP_AIM, STEEP_AIM);
@@ -711,19 +816,27 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
   }
   if (state.phase !== 'aiming') return;
 
-  if (input.weapon > 0 && input.weapon <= WEAPONS.length && state.shotsFired === 0 && !state.charging) {
-    team.weapon = WEAPONS[input.weapon - 1];
+  const picked = WEAPONS[input.weapon - 1];
+  if (picked && state.shotsFired === 0 && !state.charging && ammoLeft(team, picked) > 0) {
+    team.weapon = picked;
     s.aim = clampAim(team.weapon, s.aim);
   }
   const w = team.weapon;
+  if (input.target && w === 'homing' && state.shotsFired === 0) state.target = snapTarget(input.target);
   if (state.parachute) {
     parachuteInput(state, s, input);
     return;
   }
   if (state.rope) {
     // Enter on the rope drops a mine or dynamite (and the snail keeps swinging); else lets go.
-    if ((w === 'mine' || w === 'dynamite') && input.jump && !state.prevInput.jump) useWeapon(state, s, w, events);
+    const drop = (w === 'mine' || w === 'dynamite') && ammoLeft(team, w) > 0;
+    if (drop && input.jump && !state.prevInput.jump) useWeapon(state, s, w, events);
     else ropeInput(state, s, input);
+    return;
+  }
+  // Used up: walk around, pick another weapon.
+  if (ammoLeft(team, w) === 0 && !state.paid.includes(w)) {
+    if (state.shotsFired === 0) move(state, s, input);
     return;
   }
   if (w === 'rope') {
@@ -736,6 +849,7 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
     if (input.fire && !state.prevInput.fire && !s.grounded) {
       state.parachute = true;
       state.jumpTicks = 0;
+      spend(state, 'parachute');
       return;
     }
   } else if (isCharged(w)) {
@@ -749,6 +863,24 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
       useWeapon(state, s, w, events);
       return;
     }
+  } else if (w === 'select') {
+    // Each press hands the turn to the next snail of the team; not a shot, the turn goes on.
+    if (input.fire && !state.prevInput.fire) {
+      selectNextSnail(state, s, events);
+      return;
+    }
+  } else if (w === 'girder') {
+    // Not over a snail: the outline turns red and Space does nothing.
+    if (input.fire && !state.prevInput.fire && !girderBlocked(state, s)) {
+      useWeapon(state, s, w, events);
+      return;
+    }
+  } else if (w === 'homing') {
+    // Nowhere to go until a target is picked.
+    if (input.fire && !state.prevInput.fire && state.target) {
+      useWeapon(state, s, w, events);
+      return;
+    }
   } else if (input.fire && !state.prevInput.fire && (s.grounded || (w !== 'drill' && w !== 'torch'))) {
     // Dig tools need ground to start from; no torching mid-jump.
     useWeapon(state, s, w, events);
@@ -758,14 +890,32 @@ function handleActiveInput(state: GameState, input: InputFrame, events: SimEvent
   if (state.shotsFired === 0) move(state, s, input);
 }
 
+/** Uses left of a weapon; Infinity when it is not limited. */
+export function ammoLeft(team: Team, w: WeaponId): number {
+  return team.ammo[w] ?? Infinity;
+}
+
+/** Takes one use of a limited weapon from the active team, at most once per turn. */
+function spend(state: GameState, w: WeaponId): void {
+  const ammo = state.teams[state.activeTeam].ammo;
+  if (ammo[w] === undefined || state.paid.includes(w)) return;
+  ammo[w] = Math.max(0, ammo[w]! - 1);
+  state.paid.push(w);
+}
+
 function useWeapon(state: GameState, s: Snail, w: WeaponId, events: SimEvent[]): void {
   events.push({ type: 'fire', snailId: s.id, weapon: w });
+  spend(state, w);
   state.shotsFired++;
   switch (w) {
     case 'bazooka':
     case 'grenade':
     case 'cluster':
       state.objects.push(launchProjectile(s, state.power, w === 'bazooka' ? 'shell' : w));
+      startRetreat(state);
+      break;
+    case 'homing':
+      state.objects.push(launchProjectile(s, HOMING_LAUNCH / MAX_LAUNCH_SPEED, w));
       startRetreat(state);
       break;
     case 'punch':
@@ -785,6 +935,12 @@ function useWeapon(state: GameState, s: Snail, w: WeaponId, events: SimEvent[]):
     case 'girder':
       placeGirder(state, s);
       startRetreat(state);
+      break;
+    case 'surrender':
+      // The team gives up and is out; with two teams that ends the game.
+      state.teams[s.team].surrendered = true;
+      events.push({ type: 'surrender', team: s.team });
+      beginSettling(state);
       break;
     case 'hide':
       // Skips the move: the snail tucks into its shell until its next turn.
@@ -845,6 +1001,23 @@ function melee(state: GameState, s: Snail, poke: boolean, events: SimEvent[]): v
 export function girderSpot(s: Snail): { x: number; y: number; ux: number; uy: number } {
   const [dx, dy] = aimVector(s);
   return { x: s.x + dx * GIRDER_REACH, y: s.y + dy * GIRDER_REACH, ux: dx, uy: dy };
+}
+
+/** Gap a platform must keep from every snail (px past its body). */
+const GIRDER_GAP = 2;
+
+/** True if the platform would go over (or right up against) a living snail, the user included. */
+export function girderBlocked(state: GameState, s: Snail): boolean {
+  const g = girderSpot(s);
+  return state.snails.some((o) => {
+    if (!o.alive) return false;
+    // Distance from the snail to the platform's rectangle, in the platform's own axes.
+    const dx = o.x - g.x;
+    const dy = o.y - g.y;
+    const along = Math.max(0, Math.abs(dx * g.ux + dy * g.uy) - GIRDER_LEN / 2);
+    const across = Math.max(0, Math.abs(-dx * g.uy + dy * g.ux) - GIRDER_THICK / 2);
+    return along * along + across * across < (SNAIL_R + GIRDER_GAP) ** 2;
+  });
 }
 
 function placeGirder(state: GameState, s: Snail): void {
@@ -1069,7 +1242,7 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
     case 'settling': {
       state.settleTicks++;
       const still = state.snails.every((s) => !s.alive || s.grounded);
-      const busy = state.objects.some((o) => o.kind === 'shell' || o.fuse > 0 || !o.resting);
+      const busy = state.objects.some((o) => o.kind === 'shell' || o.kind === 'homing' || o.fuse > 0 || !o.resting);
       if ((still && !busy && state.settleTicks >= SETTLE_MIN_TICKS) || state.settleTicks >= SETTLE_MAX_TICKS) {
         finishTurn(state, events);
       }
@@ -1081,7 +1254,8 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
 
   updateObjects(state, events);
   for (const s of state.snails) {
-    if (!s.alive) continue;
+    // A grave falls and slides like any object until it sinks.
+    if (!s.alive && s.y > WATER_Y + SNAIL_R) continue;
     if (s.id === state.activeSnailId && state.kamikaze) continue;
     if (state.rope && s.id === state.activeSnailId) ropePhysics(state, s, events);
     else updateSnailPhysics(state, s, events);
@@ -1095,6 +1269,7 @@ export function step(state: GameState, rawInput: InputFrame): SimEvent[] {
   if (isMoving(state)) {
     const a = activeSnail(state);
     if (!a || !a.alive) beginSettling(state);
+    else if (Math.abs(a.x - state.startSpot.x) > MOVED_BY || Math.abs(a.y - state.startSpot.y) > MOVED_BY) state.moved = true;
   }
 
   state.prevInput = { ...input };
@@ -1117,6 +1292,7 @@ const HOOK_SPEED = 8;
 
 /** Throws the hook along the aim; it flies for a moment before it sticks or falls short. */
 function fireRope(state: GameState, s: Snail): void {
+  spend(state, 'rope');
   const [dx, dy] = aimVector(s);
   state.hook = { x: s.x, y: s.y, dx, dy, dist: 0 };
   state.jumpTicks = 0;
@@ -1350,6 +1526,14 @@ export function hashState(state: GameState): number {
   mix(state.burstTicks);
   mix(state.retreatTicks);
   mix(state.jumpTicks);
+  mix(state.moved ? 1 : 0);
+  for (const w of state.paid) mix(WEAPONS.indexOf(w));
+  mixF(state.startSpot.x);
+  mixF(state.startSpot.y);
+  if (state.target) {
+    mixF(state.target.x);
+    mixF(state.target.y);
+  }
   if (state.hook) {
     mixF(state.hook.x);
     mixF(state.hook.y);
@@ -1373,6 +1557,8 @@ export function hashState(state: GameState): number {
   for (const t of state.teams) {
     mix(WEAPONS.indexOf(t.weapon));
     mix(t.color);
+    mix(t.surrendered ? 1 : 0);
+    for (const w of WEAPONS) mix(t.ammo[w] ?? -1);
   }
   for (const o of state.objects) {
     mix(OBJECT_KINDS.indexOf(o.kind));

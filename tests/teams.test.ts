@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Bot } from '../src/ai/bot';
 import { createGame, hashState, step } from '../src/sim/game';
 import { TurnRecorder, rebuild, type MatchRecord } from '../src/sim/turnlog';
-import { type TeamSetup } from '../src/sim/types';
+import { EMPTY_INPUT, type TeamSetup } from '../src/sim/types';
 
 const teams: TeamSetup[] = [
   { name: 'Ants', color: 4, snailNames: ['A1', 'A2'] },
@@ -21,7 +21,7 @@ describe('teams from the lobby', () => {
     }
     const seen = new Set<number>();
     for (let i = 0; i < 60 * 60 && seen.size < 4; i++) {
-      step(state, { left: false, right: false, up: false, down: false, jump: false, fire: false, weapon: 0 });
+      step(state, EMPTY_INPUT);
       seen.add(state.activeTeam);
     }
     expect([...seen].sort()).toEqual([0, 1, 2, 3]);

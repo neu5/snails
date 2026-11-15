@@ -1,4 +1,4 @@
-import { createGame, effectiveInput, hashState, step } from './game';
+import { TARGET_GRID, createGame, effectiveInput, hashState, step } from './game';
 import { EMPTY_INPUT, type GameConfig, type GameState, type InputFrame, type SimEvent } from './types';
 
 /**
@@ -33,11 +33,20 @@ export class DesyncError extends Error {
 }
 
 const KEYS = ['left', 'right', 'up', 'down', 'jump', 'fire'] as const;
-/** Bits 0-5 are KEYS, bits 6-11 the weapon picked (up to 63 weapons). */
+/**
+ * Bits 0-5 are KEYS, bits 6-11 the weapon picked (up to 63 weapons), bits 12-30 a map target in
+ * TARGET_GRID cells: 10 bits of x + 1 (0 means no target), then 9 bits of y.
+ */
 const WEAPON_SHIFT = KEYS.length;
+const TARGET_X_SHIFT = 12;
+const TARGET_Y_SHIFT = 22;
 
 export function packInput(input: InputFrame): number {
   let bits = (input.weapon & 63) << WEAPON_SHIFT;
+  if (input.target) {
+    bits |= (Math.floor(input.target.x / TARGET_GRID) + 1) << TARGET_X_SHIFT;
+    bits |= Math.floor(input.target.y / TARGET_GRID) << TARGET_Y_SHIFT;
+  }
   KEYS.forEach((k, i) => {
     if (input[k]) bits |= 1 << i;
   });
@@ -46,6 +55,8 @@ export function packInput(input: InputFrame): number {
 
 export function unpackInput(bits: number): InputFrame {
   const out = { ...EMPTY_INPUT, weapon: (bits >> WEAPON_SHIFT) & 63 };
+  const cellX = (bits >> TARGET_X_SHIFT) & 1023;
+  if (cellX > 0) out.target = { x: (cellX - 1) * TARGET_GRID, y: ((bits >> TARGET_Y_SHIFT) & 511) * TARGET_GRID };
   KEYS.forEach((k, i) => {
     out[k] = (bits & (1 << i)) !== 0;
   });

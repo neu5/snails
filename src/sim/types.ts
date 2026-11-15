@@ -13,6 +13,13 @@ export interface InputFrame {
   fire: boolean;
   /** 1-based index into WEAPONS on the tick a weapon is picked from the menu, else 0 (at most 63). */
   weapon: number;
+  /** World point picked on the map on this tick (the homing missile's target), else null. */
+  target: Point | null;
+}
+
+export interface Point {
+  x: number;
+  y: number;
 }
 
 export const EMPTY_INPUT: InputFrame = {
@@ -23,6 +30,7 @@ export const EMPTY_INPUT: InputFrame = {
   jump: false,
   fire: false,
   weapon: 0,
+  target: null,
 };
 
 export type WeaponId =
@@ -41,9 +49,15 @@ export type WeaponId =
   | 'girder'
   | 'rope'
   | 'parachute'
-  | 'hide';
+  | 'hide'
+  | 'homing'
+  | 'select'
+  | 'surrender';
 
-/** Order in the weapon menu; InputFrame.weapon indexes this (1-based). */
+/**
+ * InputFrame.weapon indexes this (1-based), so saved turns depend on the order: add new weapons
+ * at the end. The menu layout is WEAPON_ROWS.
+ */
 export const WEAPONS: readonly WeaponId[] = [
   'bazooka',
   'grenade',
@@ -61,6 +75,21 @@ export const WEAPONS: readonly WeaponId[] = [
   'rope',
   'parachute',
   'hide',
+  'homing',
+  'select',
+  'surrender',
+];
+
+/** The weapon menu, one kind of weapon per row, up to three in a row. */
+export const WEAPON_ROWS: readonly (readonly WeaponId[])[] = [
+  ['bazooka', 'homing'],
+  ['grenade', 'cluster'],
+  ['gun', 'uzi'],
+  ['punch', 'poke', 'kamikaze'],
+  ['mine', 'dynamite'],
+  ['drill', 'torch', 'girder'],
+  ['rope', 'parachute'],
+  ['hide', 'select', 'surrender'],
 ];
 
 /**
@@ -149,10 +178,14 @@ export interface Team {
   nextIndex: number;
   /** Selected weapon; kept between this team's turns. */
   weapon: WeaponId;
+  /** Gave up: out of the game, its snails wave white flags. */
+  surrendered: boolean;
+  /** Uses left of the limited weapons (copied from the config); unlisted ones are unlimited. */
+  ammo: Ammo;
 }
 
 /** A cluster bomb bursts into bomblets, which go off on impact. */
-export type ObjectKind = 'shell' | 'grenade' | 'mine' | 'dynamite' | 'cluster' | 'bomblet';
+export type ObjectKind = 'shell' | 'grenade' | 'mine' | 'dynamite' | 'cluster' | 'bomblet' | 'homing';
 
 /** Anything flying or lying on the map. Mines stay between turns. */
 export interface Projectile {
@@ -190,7 +223,13 @@ export interface GameConfig {
   turnSeconds: number;
   /** 2-4 teams; when missing, the two default teams play. */
   teams?: TeamSetup[];
+  /** Uses of each weapon a team starts with; a weapon not listed is unlimited. */
+  ammo: Ammo;
+  /** Each team's grave marker (an index into the renderer's GRAVES); looks only. */
+  graves: number[];
 }
+
+export type Ammo = Partial<Record<WeaponId, number>>;
 
 export interface GameState {
   config: GameConfig;
@@ -219,6 +258,16 @@ export interface GameState {
   dig: Dig | null;
   rope: Rope | null;
   hook: Hook | null;
+  /** Where the homing missile goes; picked on the map, cleared each turn. */
+  target: Point | null;
+  /** Where the active snail stood when it got the turn; once it leaves, `moved` stays set. */
+  startSpot: Point;
+  moved: boolean;
+  /**
+   * Limited weapons already paid for this turn: using one again in the same turn is free
+   * (the gun's second shot, another rope throw, going on round the team with Change).
+   */
+  paid: WeaponId[];
   kamikaze: Kamikaze | null;
   /** The active snail floats down under a parachute. */
   parachute: boolean;
@@ -247,5 +296,10 @@ export type SimEvent =
   /** Punch or poke; hit says whether it reached a snail. */
   | { type: 'punch'; x: number; y: number; hit: boolean; poke: boolean }
   | { type: 'hide'; snailId: number }
+  /** The player switched to another snail of the team for this turn. */
+  | { type: 'select'; snailId: number }
+  /** Change was tried after the snail had already moved. */
+  | { type: 'selectRefused'; snailId: number }
+  | { type: 'surrender'; team: number }
   | { type: 'turn'; team: number; snailId: number }
   | { type: 'gameover'; winner: number };

@@ -1,4 +1,4 @@
-import type { InputFrame } from '../sim/types';
+import type { InputFrame, Point } from '../sim/types';
 
 export type Held = Exclude<keyof InputFrame, 'weapon'>;
 
@@ -31,6 +31,7 @@ export class KeyboardInput {
   private lastOn = new Set<Held>();
   /** Weapon picked from the menu; kept until sampled once. */
   private weapon = 0;
+  private target: Point | null = null;
   private onKey = new Map<string, () => void>();
 
   constructor(target: Window = window) {
@@ -76,6 +77,11 @@ export class KeyboardInput {
     this.weapon = n;
   }
 
+  /** Picks a world point (the homing missile's target) on the next tick. */
+  pickTarget(p: Point): void {
+    this.target = p;
+  }
+
   sample(): InputFrame {
     const on = (c: Held): boolean => {
       const n = this.taps.get(c) ?? 0;
@@ -97,8 +103,10 @@ export class KeyboardInput {
       jump: on('jump'),
       fire: on('fire'),
       weapon: this.weapon,
+      target: this.target,
     };
     this.weapon = 0;
+    this.target = null;
     return frame;
   }
 }

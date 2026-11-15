@@ -243,6 +243,9 @@ export class Sound {
               this.hiss('bandpass', 500, 1400, 0.35, { x, gain: 0.16, q: 1.5 });
               this.tone(180, 90, 0.18, 'triangle', { x, gain: 0.08 });
               break;
+            case 'homing':
+              this.hiss('bandpass', 400, 1800, 0.45, { x, gain: 0.12, q: 1.5 });
+              break;
             case 'grenade':
               this.hiss('bandpass', 900, 1800, 0.18, { x, gain: 0.08, q: 2 });
               break;
@@ -306,6 +309,12 @@ export class Sound {
           this.tone(520, 240, 0.16, 'triangle', { x: e.x, gain: 0.12 });
           this.hiss('lowpass', 900, 200, 0.12, { x: e.x, gain: 0.08 });
           break;
+        case 'select':
+          this.tone(700, 900, 0.08, 'sine', { gain: 0.05 });
+          break;
+        case 'surrender':
+          [523, 466, 392, 330].forEach((f, i) => this.tone(f, f * 0.98, 0.5, 'triangle', { gain: 0.05, delay: i * 0.22 }));
+          break;
         case 'turn':
           this.tone(660, 660, 0.9, 'sine', { gain: 0.04 });
           this.tone(990, 990, 1.1, 'sine', { gain: 0.03, delay: 0.12 });
@@ -326,6 +335,7 @@ export class Sound {
     const digging = state.phase === 'digging';
     this.loop('torch', digging && weapon === 'torch', () => this.noiseLoop('bandpass', 2600, 0.6, 0.05));
     this.loop('drill', digging && weapon === 'drill', () => this.noiseLoop('bandpass', 260, 1.5, 0.07, 22));
+    this.loop('rocket', state.objects.some((o) => o.kind === 'homing'), () => this.noiseLoop('bandpass', 1100, 1.2, 0.05));
     this.loop('fuse', state.objects.some((o) => o.kind === 'dynamite' && o.fuse > 0), () => this.noiseLoop('highpass', 5000, 0.5, 0.02));
     this.updateCharge(state);
 

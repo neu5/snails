@@ -1,7 +1,8 @@
-import { GIRDER_LEN, MAP_H, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
+import { GIRDER_LEN, girderBlocked, HOMING_FUEL, MAP_H, ammoLeft, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
+import { drawGrave } from './graves';
 import { teamColor, teamPalette } from './palette';
-import { WEAPONS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
+import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
 /** Canvas size; the camera shows part of the (bigger) map in it, or all of it zoomed out. */
 export const VIEW_W = 1280;
@@ -14,8 +15,8 @@ const HUD_MARGIN = 16;
 const WIND_H = 40;
 const TILE = 44;
 const TILE_GAP = 6;
-/** The weapon drawer is a grid at least this many wide; it widens when rows run out of room. */
-const MENU_MIN_COLS = 3;
+/** Weapons per row in the drawer, which shows WEAPON_ROWS when they all fit in its height. */
+const MENU_ROW_LEN = 3;
 /** Space kept free under the drawer (health bars, touch buttons), unscaled px. */
 const MENU_FOOT = 110;
 /** Pointer this close to the right edge (canvas px) slides the drawer out on a laptop. */
@@ -27,6 +28,7 @@ const BAR_W = 172;
 
 const WEAPON_NAMES: Record<WeaponId, string> = {
   bazooka: 'Bazooka',
+  homing: 'Homing',
   grenade: 'Grenade',
   cluster: 'Cluster',
   gun: 'Gun',
@@ -42,6 +44,8 @@ const WEAPON_NAMES: Record<WeaponId, string> = {
   rope: 'Rope',
   parachute: 'Parachute',
   hide: 'Hide',
+  select: 'Change',
+  surrender: 'Surrender',
 };
 
 type Rect = { x: number; y: number; size: number };
@@ -76,7 +80,7 @@ interface Tracer {
 const ROPE_COLOR = '#c8a165';
 
 /** Weapons used without aiming: no crosshair. */
-const NO_AIM = new Set<WeaponId>(['mine', 'dynamite', 'drill', 'punch', 'poke', 'parachute', 'hide']);
+const NO_AIM = new Set<WeaponId>(['mine', 'dynamite', 'drill', 'punch', 'poke', 'parachute', 'hide', 'select', 'surrender']);
 
 interface FloatText {
   x: number;
@@ -185,7 +189,7 @@ export class Renderer {
 
   /** What the camera should watch: something flying, else the snail whose turn it is. */
   private focus(state: GameState): { x: number; y: number; fast: boolean } | null {
-    const shell = state.objects.find((o) => o.kind === 'shell');
+    const shell = state.objects.find((o) => o.kind === 'shell' || o.kind === 'homing');
     if (shell) return { x: shell.x, y: shell.y, fast: true };
     if (state.hook) return { x: state.hook.x, y: state.hook.y, fast: true };
     const thrown = state.objects.find((o) => !o.resting && o.kind !== 'mine');
@@ -273,6 +277,20 @@ export class Renderer {
           this.texts.push({ x: e.x, y: e.y - 16, text: e.poke ? 'poke!' : e.hit ? 'POW!' : 'swish', color: e.hit ? '#ffe17a' : '#ddd', life: 0 });
           if (e.hit && !e.poke) this.shake = Math.max(this.shake, 5);
           break;
+        case 'surrender':
+          this.banner = { text: `${state.teams[e.team].name} surrender`, color: '#fff', life: 0 };
+          break;
+        case 'select': {
+          if (!this.overview) this.camera.manual = false;
+          const s = state.snails[e.snailId];
+          this.banner = { text: `${s.name}'s turn`, color: teamColor(state, s.team), life: 40 };
+          break;
+        }
+        case 'selectRefused': {
+          const s = state.snails[e.snailId];
+          this.texts.push({ x: s.x, y: s.y - 36, text: 'moved: no change', color: '#ddd', life: 0 });
+          break;
+        }
         case 'hide': {
           const s = state.snails[e.snailId];
           this.texts.push({ x: s.x, y: s.y - 30, text: 'zzz', color: '#bfe8ff', life: 0 });
@@ -399,6 +417,7 @@ export class Renderer {
     this.drawRope(ctx, state);
     for (const s of state.snails) this.drawSnail(ctx, state, s);
     for (const o of state.objects) this.drawObject(ctx, o);
+    this.drawTarget(ctx, state);
     this.drawDigTool(ctx, state);
     this.drawGear(ctx, state);
     this.drawTracers(ctx);
@@ -454,18 +473,8 @@ export class Renderer {
 
   private drawSnail(ctx: CanvasRenderingContext2D, state: GameState, s: Snail): void {
     if (!s.alive) {
-      if (s.y < WATER_Y) {
-        // Empty shell marker.
-        ctx.fillStyle = '#8a8a8a';
-        ctx.beginPath();
-        ctx.arc(s.x, s.y + 2, 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#555';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(s.x, s.y + 2, 3, 0, Math.PI * 1.5);
-        ctx.stroke();
-      }
+      // The team's chosen grave, standing where the snail's foot was.
+      if (s.y < WATER_Y) drawGrave(ctx, state.config.graves?.[s.team] ?? 0, s.x, s.y + SNAIL_R);
       return;
     }
     const isActive = state.activeSnailId === s.id && state.phase !== 'gameover';
@@ -533,6 +542,7 @@ export class Renderer {
     }
     ctx.stroke();
     ctx.restore();
+    if (state.teams[s.team]?.surrendered) drawWhiteFlag(ctx, s.x - 4 * f, s.y - 6, this.frame);
 
     // Label.
     ctx.font = 'bold 12px Verdana, Arial, Helvetica, sans-serif';
@@ -558,6 +568,9 @@ export class Renderer {
     switch (o.kind) {
       case 'shell':
         this.drawProjectile(ctx, o.x, o.y, o.vx, o.vy);
+        return;
+      case 'homing':
+        this.drawMissile(ctx, o);
         return;
       case 'bomblet':
         ctx.fillStyle = '#2a2a2e';
@@ -637,6 +650,63 @@ export class Renderer {
       next.push(t);
     }
     this.tracers = next;
+  }
+
+  /** The homing missile: slim and white, a flame and a smoke trail while it has fuel. */
+  private drawMissile(ctx: CanvasRenderingContext2D, o: Projectile): void {
+    const burning = o.age < HOMING_FUEL;
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    ctx.rotate(Math.atan2(o.vy, o.vx));
+    if (burning) {
+      const len = 7 + Math.random() * 5;
+      ctx.fillStyle = '#ff9f1c';
+      ctx.beginPath();
+      ctx.moveTo(-7, -2.5);
+      ctx.lineTo(-7 - len, 0);
+      ctx.lineTo(-7, 2.5);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#c62f2f';
+    ctx.beginPath();
+    ctx.moveTo(-8, -5);
+    ctx.lineTo(-3, -2);
+    ctx.lineTo(-3, 2);
+    ctx.lineTo(-8, 5);
+    ctx.fill();
+    ctx.fillStyle = '#e6e9ee';
+    ctx.fillRect(-8, -2.5, 13, 5);
+    ctx.fillStyle = '#c62f2f';
+    ctx.beginPath();
+    ctx.moveTo(5, -2.5);
+    ctx.lineTo(10, 0);
+    ctx.lineTo(5, 2.5);
+    ctx.fill();
+    ctx.restore();
+    if (burning && this.frame % 2 === 0) {
+      this.puff(o.x, o.y, -o.vx * 0.05, -o.vy * 0.05, 30, '#ddd8', 3, -0.01);
+    }
+  }
+
+  /** The picked target, turning slowly. */
+  private drawTarget(ctx: CanvasRenderingContext2D, state: GameState): void {
+    const t = state.target;
+    if (!t) return;
+    const r = 13 + Math.sin(this.frame * 0.1) * 1.5;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(this.frame * 0.02);
+    ctx.strokeStyle = '#ff4d4d';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2;
+      ctx.moveTo(Math.cos(a) * (r - 5), Math.sin(a) * (r - 5));
+      ctx.lineTo(Math.cos(a) * (r + 6), Math.sin(a) * (r + 6));
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawProjectile(ctx: CanvasRenderingContext2D, x: number, y: number, vx: number, vy: number): void {
@@ -740,12 +810,13 @@ export class Renderer {
   }
 
   /** Where a platform would go, drawn as an outline while aiming. */
-  private drawGirderGhost(ctx: CanvasRenderingContext2D, s: Snail): void {
+  private drawGirderGhost(ctx: CanvasRenderingContext2D, state: GameState, s: Snail): void {
     const g = girderSpot(s);
+    const blocked = girderBlocked(state, s);
     ctx.save();
     ctx.translate(g.x, g.y);
     ctx.rotate(Math.atan2(g.uy, g.ux));
-    ctx.strokeStyle = '#ffffffaa';
+    ctx.strokeStyle = blocked ? '#ff4d4dcc' : '#ffffffaa';
     ctx.setLineDash([5, 4]);
     ctx.lineWidth = 1.5;
     ctx.strokeRect(-GIRDER_LEN / 2, -4, GIRDER_LEN, 8);
@@ -761,7 +832,7 @@ export class Renderer {
     // Mines, dynamite and the drill need no aim.
     if (NO_AIM.has(weapon)) return;
     if (weapon === 'girder') {
-      this.drawGirderGhost(ctx, s);
+      this.drawGirderGhost(ctx, state, s);
       return;
     }
     const [dx, dy] = aimVector(s);
@@ -779,7 +850,12 @@ export class Renderer {
     ctx.save();
     ctx.translate(s.x, s.y - 2);
     ctx.rotate(Math.atan2(dy, dx));
-    if (weapon === 'bazooka') {
+    if (weapon === 'homing') {
+      ctx.fillStyle = '#e6e9ee';
+      ctx.fillRect(0, -3, 18, 6);
+      ctx.fillStyle = '#c62f2f';
+      ctx.fillRect(15, -4, 4, 8);
+    } else if (weapon === 'bazooka') {
       ctx.fillStyle = '#55613f';
       ctx.fillRect(0, -3, 18, 6);
       ctx.fillStyle = '#2e3522';
@@ -1013,16 +1089,21 @@ export class Renderer {
     return { x: VIEW_W - HUD_MARGIN - w * k + hidden, y: box.y + box.size + TILE_GAP * k };
   }
 
-  /** Drawer grid size (unscaled px): as tall as fits above the bottom HUD, then wider. */
-  private menuLayout(): { cols: number; rows: number; w: number; h: number } {
+  /**
+   * Drawer grid size (unscaled px). Short screens cannot fit one row per kind of weapon above
+   * the bottom HUD, so there the same order runs on through a wider, shorter grid.
+   */
+  private menuLayout(): { grouped: boolean; cols: number; rows: number; w: number; h: number } {
     const k = this.uiScale;
     const box = this.weaponBox();
     const top = box.y + box.size + TILE_GAP * k;
     const room = (VIEW_H - top) / k - MENU_HEAD - MENU_PAD - MENU_FOOT;
     const fitRows = Math.max(1, Math.floor((room + TILE_GAP) / (TILE + TILE_GAP)));
-    const cols = Math.max(MENU_MIN_COLS, Math.ceil(WEAPONS.length / fitRows));
-    const rows = Math.ceil(WEAPONS.length / cols);
+    const grouped = fitRows >= WEAPON_ROWS.length;
+    const cols = grouped ? MENU_ROW_LEN : Math.max(MENU_ROW_LEN, Math.ceil(WEAPONS.length / fitRows));
+    const rows = grouped ? WEAPON_ROWS.length : Math.ceil(WEAPONS.length / cols);
     return {
+      grouped,
       cols,
       rows,
       w: cols * (TILE + TILE_GAP) - TILE_GAP + MENU_PAD * 2,
@@ -1030,14 +1111,17 @@ export class Renderer {
     };
   }
 
-  /** Weapon tile i (0-based) in the drawer, in canvas pixels. */
-  private menuTile(i: number, settled = false): Rect {
+  /** A weapon's tile in the drawer, in canvas pixels. */
+  private menuTile(id: WeaponId, settled = false): Rect {
     const k = this.uiScale;
     const o = this.menuOrigin(settled);
-    const { cols } = this.menuLayout();
+    const { grouped, cols } = this.menuLayout();
+    const i = WEAPON_ROWS.flat().indexOf(id);
+    const row = grouped ? WEAPON_ROWS.findIndex((r) => r.includes(id)) : Math.floor(i / cols);
+    const col = grouped ? WEAPON_ROWS[row].indexOf(id) : i % cols;
     return {
-      x: o.x + (MENU_PAD + (i % cols) * (TILE + TILE_GAP)) * k,
-      y: o.y + (MENU_HEAD + Math.floor(i / cols) * (TILE + TILE_GAP)) * k,
+      x: o.x + (MENU_PAD + col * (TILE + TILE_GAP)) * k,
+      y: o.y + (MENU_HEAD + row * (TILE + TILE_GAP)) * k,
       size: TILE * k,
     };
   }
@@ -1096,7 +1180,11 @@ export class Renderer {
     if (!this.menuOpen) return { used: false, weapon: 0 };
     this.menuOpen = false;
     this.hoverOpen = false;
-    for (let i = 0; i < WEAPONS.length; i++) if (inside(this.menuTile(i, true))) return { used: true, weapon: i + 1 };
+    const team = state.teams[state.activeTeam];
+    for (let i = 0; i < WEAPONS.length; i++) {
+      // A used-up weapon cannot be picked; the tap just closes the menu.
+      if (inside(this.menuTile(WEAPONS[i], true))) return { used: true, weapon: team && ammoLeft(team, WEAPONS[i]) === 0 ? 0 : i + 1 };
+    }
     // A tap anywhere else just closes the menu.
     return { used: true, weapon: 0 };
   }
@@ -1126,6 +1214,8 @@ export class Renderer {
     ctx.lineWidth = 2.5 * k;
     ctx.stroke();
     drawWeaponIcon(ctx, current, t.x + t.size / 2, t.y + t.size / 2, t.size * 0.8);
+    const left = ammoLeft(state.teams[state.activeTeam], current);
+    if (left !== Infinity) drawAmmo(ctx, left, t.x + t.size - 3 * k, t.y + 3 * k, k);
     // A small arrow says it opens.
     if (!locked) {
       ctx.fillStyle = '#fffc';
@@ -1161,9 +1251,12 @@ export class Renderer {
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ddd';
     ctx.fillText('Pick a weapon', o.x + MENU_PAD * k, o.y + 18 * k);
-    WEAPONS.forEach((id, i) => {
-      const t = this.menuTile(i);
+    const team = state.teams[state.activeTeam];
+    WEAPONS.forEach((id) => {
+      const t = this.menuTile(id);
       const on = id === current;
+      const left = team ? ammoLeft(team, id) : Infinity;
+      ctx.globalAlpha = left === 0 ? 0.3 : 1;
       ctx.fillStyle = on ? '#ffffff22' : '#ffffff0d';
       roundRect(ctx, t.x, t.y, t.size, t.size, 8 * k);
       ctx.fill();
@@ -1177,6 +1270,8 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.fillStyle = '#ddd';
       ctx.fillText(WEAPON_NAMES[id], t.x + t.size / 2, t.y + t.size - 4 * k);
+      if (left !== Infinity) drawAmmo(ctx, left, t.x + t.size - 3 * k, t.y + 3 * k, k);
+      ctx.globalAlpha = 1;
     });
   }
 
@@ -1304,6 +1399,30 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
   ctx.translate(cx, cy);
   ctx.scale(size / 32, size / 32);
   switch (id) {
+    case 'homing':
+      // White missile homing in on a red ring.
+      ctx.strokeStyle = '#ff4d4d';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(9, -9, 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.rotate(-0.75);
+      ctx.fillStyle = '#c62f2f';
+      ctx.beginPath();
+      ctx.moveTo(-13, -6);
+      ctx.lineTo(-7, -2.5);
+      ctx.lineTo(-7, 2.5);
+      ctx.lineTo(-13, 6);
+      ctx.fill();
+      ctx.fillStyle = '#e6e9ee';
+      ctx.fillRect(-12, -3, 15, 6);
+      ctx.fillStyle = '#c62f2f';
+      ctx.beginPath();
+      ctx.moveTo(3, -3);
+      ctx.lineTo(8, 0);
+      ctx.lineTo(3, 3);
+      ctx.fill();
+      break;
     case 'bazooka':
       ctx.rotate(-0.5);
       ctx.fillStyle = '#6b7a4f';
@@ -1493,6 +1612,32 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.arc(0, 12, 3.5, 0, Math.PI * 2);
       ctx.fill();
       break;
+    case 'select':
+      // Two shells with arrows going round between them.
+      for (const [x, c] of [
+        [-7, '#ffb36b'],
+        [7, '#9fe0ff'],
+      ] as const) {
+        ctx.fillStyle = c;
+        ctx.beginPath();
+        ctx.arc(x, 5, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 2, 11, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(10, -9);
+      ctx.lineTo(4, -11);
+      ctx.lineTo(9, -4);
+      ctx.fill();
+      break;
+    case 'surrender':
+      drawWhiteFlag(ctx, -4, 12, 0, 1.4);
+      break;
     case 'hide':
       // A shell with "zzz".
       ctx.fillStyle = '#ffb36b';
@@ -1549,6 +1694,46 @@ function drawWeaponIcon(ctx: CanvasRenderingContext2D, id: WeaponId, cx: number,
       ctx.fill();
       break;
   }
+  ctx.restore();
+}
+
+/** Uses left, as a small number badge with its top-right corner at (x, y). */
+function drawAmmo(ctx: CanvasRenderingContext2D, n: number, x: number, y: number, k: number): void {
+  const text = String(n);
+  ctx.font = `bold ${Math.round(9 * k)}px Verdana, Arial, Helvetica, sans-serif`;
+  const w = Math.max(12 * k, ctx.measureText(text).width + 6 * k);
+  const h = 12 * k;
+  ctx.fillStyle = n === 0 ? '#555' : '#ffd166';
+  roundRect(ctx, x - w, y, w, h, 6 * k);
+  ctx.fill();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, x - w / 2, y + 9 * k);
+}
+
+/** A white flag on a stick, the stick's foot at (x, y). */
+function drawWhiteFlag(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, scale = 1): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.strokeStyle = '#8a6a44';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, -22);
+  ctx.stroke();
+  const wave = Math.sin(frame * 0.12) * 1.5;
+  ctx.fillStyle = '#f4f4f0';
+  ctx.strokeStyle = '#999';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(0, -22);
+  ctx.quadraticCurveTo(6, -24 + wave, 12, -21);
+  ctx.lineTo(12, -13);
+  ctx.quadraticCurveTo(6, -16 - wave, 0, -14);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
   ctx.restore();
 }
 

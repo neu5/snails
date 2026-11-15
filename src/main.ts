@@ -4,6 +4,7 @@ import { KeyboardInput } from './input/keyboard';
 import { addTouchControls } from './input/touch';
 import { showLobby } from './lobby/lobby';
 import { ServerMatchStore } from './net/server-store';
+import { MAX_SNAILS_PER_TEAM, gravesFromUrl, modeConfig, showTestLobby } from './lobby/test-lobby';
 import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store';
 import { teamColor } from './render/palette';
 import { Renderer, VIEW_H, VIEW_W } from './render/renderer';
@@ -26,6 +27,9 @@ let online = false;
 let matchId = params.get('match') ?? 'default';
 let store: MatchStore = asyncPlay ? new LocalMatchStore() : new MemoryMatchStore();
 const isLocal = (team: number): boolean => !asyncPlay || team === myTeam || botTeams.has(team);
+
+/** ?test=1 shows the test lobby instead of a game. */
+const inLobby = params.has('test');
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const renderer = new Renderer(canvas);
@@ -50,12 +54,15 @@ function canvasPoint(e: { clientX: number; clientY: number }): [number, number] 
 // Tapping the weapon box opens the weapon menu, tapping a weapon there picks it. Dragging
 // elsewhere looks around the map, two fingers pinch to zoom. Right-click also opens the menu.
 const pointers = new Map<number, [number, number]>();
+/** Where a press began, until it turns into a drag or a second finger comes down. */
+let press: [number, number] | null = null;
 canvas.addEventListener('pointerdown', (e) => {
   const [x, y] = canvasPoint(e);
   if (e.button !== 0) return;
   const { used, weapon } = renderer.tap(x, y, state);
   if (weapon) keyboard.pickWeapon(weapon);
   if (used) return;
+  press = pointers.size === 0 ? [x, y] : null;
   pointers.set(e.pointerId, [x, y]);
   canvas.setPointerCapture(e.pointerId);
 });
@@ -65,6 +72,7 @@ canvas.addEventListener('pointermove', (e) => {
   const prev = pointers.get(e.pointerId);
   if (!prev) return;
   const [x, y] = canvasPoint(e);
+  if (press && Math.hypot(x - press[0], y - press[1]) > 10) press = null;
   if (pointers.size === 1) {
     renderer.panBy(x - prev[0], y - prev[1], state);
   } else if (pointers.size === 2) {
@@ -79,7 +87,15 @@ const lift = (e: PointerEvent) => pointers.delete(e.pointerId);
 canvas.addEventListener('pointerleave', (e) => {
   if (e.pointerType === 'mouse') renderer.hover(null, 0, state);
 });
-canvas.addEventListener('pointerup', lift);
+canvas.addEventListener('pointerup', (e) => {
+  lift(e);
+  // A click on the map (not a drag) picks the homing missile's target.
+  if (press && pickingTarget()) {
+    const [x, y] = renderer.camera.toWorld(...canvasPoint(e));
+    keyboard.pickTarget({ x, y });
+  }
+  press = null;
+});
 canvas.addEventListener('pointercancel', lift);
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
@@ -112,13 +128,15 @@ let mode: Mode = { kind: 'waiting' };
 let bots = new Map<number, Bot>();
 
 function configFromUrl(seed: number): Partial<GameConfig> {
-  const cfg: Partial<GameConfig> = { seed };
+  // ?mode=infinite: no weapon limits.
+  const cfg: Partial<GameConfig> = { seed, ...modeConfig(params.get('mode')) };
   const hp = num('hp');
   const per = num('snails');
   const turn = num('turn');
   if (hp) cfg.startHp = hp;
-  if (per) cfg.snailsPerTeam = Math.max(1, Math.min(4, per));
+  if (per) cfg.snailsPerTeam = Math.max(1, Math.min(MAX_SNAILS_PER_TEAM, per));
   if (turn) cfg.turnSeconds = turn;
+  if (params.has('graves')) cfg.graves = gravesFromUrl(params.get('graves'));
   return cfg;
 }
 
@@ -292,6 +310,10 @@ keyboard.bind('KeyO', () => {
   if (!online) location.href = '/?online';
 });
 keyboard.bind('KeyP', watchLastTurn);
+// Back to the test lobby from a game it started.
+keyboard.bind('KeyL', () => {
+  if (params.get('lobby') === 'test') location.search = '?test=1';
+});
 keyboard.bind('KeyM', () => renderer.toggleOverview());
 keyboard.bind('KeyC', () => renderer.recenter());
 keyboard.bind('Escape', () => {
@@ -303,9 +325,15 @@ function teamName(team: number): string {
   return state.teams[team]?.name ?? `Team ${team + 1}`;
 }
 
+function pickingTarget(): boolean {
+  if (mode.kind !== 'live' || bots.has(state.activeTeam)) return false;
+  return state.phase === 'aiming' && state.shotsFired === 0 && state.teams[state.activeTeam].weapon === 'homing';
+}
+
 function statusLine(): Renderer['status'] {
   switch (mode.kind) {
     case 'live':
+      if (pickingTarget() && !state.target) return { text: `${touch ? 'Tap' : 'Click'} the map to pick a target`, color: '#fff' };
       return null;
     case 'replay': {
       const t = mode.playback.record;
@@ -390,7 +418,12 @@ async function startGame(): Promise<void> {
 }
 
 const roomId = params.get('room');
-if (roomId || params.has('online')) {
+if (inLobby) {
+  canvas.style.display = 'none';
+  // The lobby works upright too.
+  document.getElementById('rotate')?.remove();
+  showTestLobby();
+} else if (roomId || params.has('online')) {
   canvas.hidden = true;
   showLobby(document.getElementById('lobby')!, roomId, (seat) => {
     online = true;
