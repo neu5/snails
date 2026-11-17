@@ -246,8 +246,14 @@ function skipReplay(): void {
   playQueue([], resume);
 }
 
-/** Re-watches the last finished turn, then returns to where we were. */
+/** Re-watches the last finished turn (P); P again stops it and goes back to where we were. */
 function watchLastTurn(): void {
+  if (mode.kind === 'replay' && mode.resume) {
+    state = mode.resume.state;
+    mode = mode.resume.mode;
+    renderer.reset();
+    return;
+  }
   if (mode.kind === 'replay' || applied === 0) return;
   const resume = { state, mode };
   try {
@@ -327,8 +333,10 @@ function statusLine(): Renderer['status'] {
       return null;
     case 'replay': {
       const t = mode.playback.record;
-      const what = mode.resume ? `Replay of turn ${t.turn}` : `${teamName(t.team)}'s move (turn ${t.turn})`;
-      return { text: `${what}  ·  ${touch ? 'tap ⏭' : 'Esc'} to skip`, color: TEAM_COLORS[t.team] };
+      if (mode.resume) {
+        return { text: `Replay of turn ${t.turn}  ·  ${touch ? 'tap ⟲' : 'P'} to stop`, color: TEAM_COLORS[t.team] };
+      }
+      return { text: `${teamName(t.team)}'s move (turn ${t.turn})  ·  ${touch ? 'tap ⏭' : 'Esc'} to skip`, color: TEAM_COLORS[t.team] };
     }
     case 'waiting':
       if (mode.error) return { text: `Replay failed: ${mode.error}`, color: '#ff6b6b' };

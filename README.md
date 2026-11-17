@@ -28,7 +28,7 @@ installed `node_modules` is stale or came from another machine
 | Enter (J) | Jump forward; press twice quickly for a high back jump |
 | Move the mouse to the right edge (or click the weapon box, or right-click) | Slide out the weapon drawer, then click a weapon (see below) |
 | Space | Use the weapon (hold and release to charge the bazooka and grenade; press again to stop the drill or blowtorch) |
-| P | Replay the last finished move |
+| P | Replay the last finished move (P again stops it) |
 | M | Whole map on screen (press again to go back) |
 | Drag / mouse wheel | Look around the map / zoom (two-finger pinch on a phone) |
 | C | Camera back on the action |
