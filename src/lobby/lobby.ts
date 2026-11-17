@@ -1,5 +1,5 @@
 import { SNAIL_NAME_MAX, TEAM_NAME_MAX, type RoomView, type TeamEdit } from '../net/api';
-import { listenToRoom } from '../net/live';
+import { connectRoom } from '../net/live';
 import { TEAM_PALETTE } from '../render/palette';
 import { MAX_SNAILS_PER_TEAM, MAX_TEAMS } from '../sim/types';
 
@@ -81,6 +81,8 @@ export function showLobby(root: HTMLElement, roomId: string | null, onStart: (se
   async function openRoom(id: string): Promise<void> {
     let view: RoomView;
     let stop: (() => void) | null = null;
+    /** Players with the room open right now. */
+    let online = new Set<string>();
     /** The player's own team form; built once so typing is never lost to a live update. */
     let form: HTMLElement | null = null;
     let formSnails = 0;
@@ -162,6 +164,10 @@ export function showLobby(root: HTMLElement, roomId: string | null, onStart: (se
         view.teams.map((t) =>
           el('li', {}, [
             el('span', { class: 'dot', style: `background:${TEAM_PALETTE[t.color].main}` }),
+            el('span', {
+              class: `online${online.has(t.playerId) ? ' on' : ''}`,
+              title: online.has(t.playerId) ? 'online now' : 'not here right now',
+            }),
             el('b', {}, [t.name]),
             t.isHost ? el('span', { class: 'tag' }, ['host']) : '',
             t.playerId === view.you?.playerId ? el('span', { class: 'tag you' }, ['you']) : '',
@@ -297,7 +303,15 @@ export function showLobby(root: HTMLElement, roomId: string | null, onStart: (se
 
     await load();
     if (params.get('verified') === '1') note('Email confirmed ✓');
-    stop = listenToRoom(id, () => void load());
+    const link = connectRoom(id, getToken(id), (e) => {
+      if (e.type === 'presence') {
+        online = new Set(e.online);
+        if (view && view.status === 'lobby') render();
+      } else if (e.type !== 'live') {
+        void load();
+      }
+    });
+    stop = () => link.stop();
   }
 
   // Small DOM helpers.

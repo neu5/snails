@@ -3,7 +3,8 @@ import { buildApp } from '../server/app';
 import { openDb, type Db } from '../server/db';
 import { DevMailer } from '../server/mail';
 import type { RoomView } from '../src/net/api';
-import { TurnRecorder, rebuild, type MatchRecord, type TurnRecord } from '../src/sim/turnlog';
+import { TurnRecorder, rebuild, type LiveChunk, type MatchRecord, type TurnRecord } from '../src/sim/turnlog';
+import type { RoomEvent } from '../src/net/api';
 import { EMPTY_INPUT } from '../src/sim/types';
 
 let db: Db | null = null;
@@ -152,5 +153,64 @@ describe('lobby server', () => {
     expect((await call('POST', `/api/rooms/${roomId}/turns`, other, idleTurn(match))).status).toBe(200);
     expect(mailer.outbox).toHaveLength(sent);
     expect((await call<MatchRecord>('GET', `/api/rooms/${roomId}/match`)).body.turns).toHaveLength(2);
+  });
+
+  it('knows who is online and streams the turn in progress to everyone else', async () => {
+    const { app, call } = await setup();
+    const { roomId, token } = await room(call);
+    const other = await join(call, roomId);
+    await call('POST', `/api/rooms/${roomId}/start`, token);
+
+    /** A socket that says hello and keeps what the server sends it. */
+    const open = async (who: string | null) => {
+      const ws = await app.injectWS(`/ws?room=${roomId}`);
+      const got: RoomEvent[] = [];
+      ws.on('message', (m) => got.push(JSON.parse(String(m)) as RoomEvent));
+      ws.send(JSON.stringify({ type: 'hello', token: who }));
+      return { ws, got };
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 150));
+    const host = await open(token);
+    const b = await open(other);
+    await settle();
+    const presence = b.got.filter((e) => e.type === 'presence').at(-1);
+    expect(presence && presence.type === 'presence' && presence.teams.sort()).toEqual([0, 1]);
+
+    // The host (team 0) plays; chunks go to b, not back to the host.
+    const match = (await call<MatchRecord>('GET', `/api/rooms/${roomId}/match`)).body;
+    const recorder = new TurnRecorder(rebuild(match));
+    const chunks: LiveChunk[] = [];
+    let turn: TurnRecord | null = null;
+    for (let t = 1; !turn; t++) {
+      turn = recorder.step({ ...EMPTY_INPUT, left: t % 90 < 30 }).turn;
+      if (!turn && t % 15 === 0) chunks.push(recorder.takeLive()!);
+    }
+    for (const chunk of chunks.slice(0, 3)) host.ws.send(JSON.stringify({ type: 'live', chunk }));
+    // Team 1 cannot stream a move that is not theirs.
+    b.ws.send(JSON.stringify({ type: 'live', chunk: chunks[3] }));
+    await settle();
+    const live = (got: RoomEvent[]) => got.filter((e) => e.type === 'live').map((e) => (e.type === 'live' ? e.chunk : null));
+    expect(live(b.got)).toEqual(chunks.slice(0, 3));
+    expect(live(host.got)).toEqual([]);
+
+    // Someone opening the room mid-turn gets everything so far in one piece, from tick 0.
+    const late = await open(null);
+    await settle();
+    const caughtUp = live(late.got);
+    expect(caughtUp).toHaveLength(1);
+    expect(caughtUp[0]).toMatchObject({ turn: 1, from: 0 });
+
+    // Once the turn is stored, the buffer is gone.
+    expect((await call('POST', `/api/rooms/${roomId}/turns`, token, turn)).status).toBe(200);
+    const after = await open(null);
+    await settle();
+    expect(live(after.got)).toEqual([]);
+
+    // Leaving shows up as well.
+    b.ws.terminate();
+    await settle();
+    const last = host.got.filter((e) => e.type === 'presence').at(-1);
+    expect(last && last.type === 'presence' && last.teams).toEqual([0]);
+    for (const s of [host, late, after]) s.ws.terminate();
   });
 });

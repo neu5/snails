@@ -1,11 +1,23 @@
-import type { RoomEvent } from './api';
+import type { ClientMessage, RoomEvent } from './api';
+
+export interface RoomLink {
+  /** Sends a message if the socket is open; dropped otherwise (callers resend on reconnect). */
+  send(msg: ClientMessage): void;
+  stop(): void;
+}
 
 /**
- * Listens to a room's live updates over WebSocket. Reconnects with a growing delay (a sleeping
- * free server drops sockets) and reports a `room` event after every reconnect, so callers
- * reload whatever they may have missed. Returns a function that stops listening.
+ * A room's live socket. Says hello with the player's token (so the server knows who is online),
+ * reconnects with a growing delay (a sleeping free server drops sockets), and after every
+ * reconnect reports a `room` event so callers reload whatever they missed. `onConnect` runs on
+ * each (re)connect, e.g. to resend a turn being streamed.
  */
-export function listenToRoom(roomId: string, onEvent: (e: RoomEvent) => void): () => void {
+export function connectRoom(
+  roomId: string,
+  token: string | null,
+  onEvent: (e: RoomEvent) => void,
+  onConnect?: () => void,
+): RoomLink {
   let ws: WebSocket | null = null;
   let stopped = false;
   let delay = 1000;
@@ -16,8 +28,10 @@ export function listenToRoom(roomId: string, onEvent: (e: RoomEvent) => void): (
     ws = new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(roomId)}`);
     ws.onopen = () => {
       delay = 1000;
+      ws!.send(JSON.stringify({ type: 'hello', token } satisfies ClientMessage));
       if (connectedBefore) onEvent({ type: 'room' });
       connectedBefore = true;
+      onConnect?.();
     };
     ws.onmessage = (m) => {
       try {
@@ -33,9 +47,14 @@ export function listenToRoom(roomId: string, onEvent: (e: RoomEvent) => void): (
     };
   };
   open();
-  return () => {
-    stopped = true;
-    clearTimeout(timer);
-    ws?.close();
+  return {
+    send(msg) {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    },
+    stop() {
+      stopped = true;
+      clearTimeout(timer);
+      ws?.close();
+    },
   };
 }

@@ -111,6 +111,11 @@ Open http://localhost:5173/?online (or press O / tap 🌐 in the game) and creat
 - **Email (optional):** a player can add an email to hear when it is their move. Nothing is sent
   to it until its owner clicks the confirm link the server emails them; the link works once, for
   24 hours.
+- **Watching live:** a green dot shows who has the room open (in the lobby and next to each
+  team's health bar). While a player takes their turn, their game sends it in small pieces every
+  quarter second. Everyone else who is online watches it about 2.5 s behind, played from a
+  buffer so it runs smoothly. Someone who opens the room mid-turn starts from the turn's
+  beginning. Players who are offline see the turn as a replay later, as before.
 - **Taking turns:** the server replays every turn it gets (`applyTurn`) and refuses turns from the
   wrong player or with a wrong state hash. It then tells everyone with the room open, and emails
   the next team if its address is confirmed.

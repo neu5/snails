@@ -1,5 +1,7 @@
 /** Shapes the lobby server sends and takes. Shared by server/ and the browser. */
 
+import type { LiveChunk } from '../sim/turnlog';
+
 export type RoomStatus = 'lobby' | 'playing' | 'over';
 
 export interface TeamView {
@@ -42,7 +44,20 @@ export interface RoomSettings {
 }
 
 /** Pushed over /ws?room=<id>. */
-export type RoomEvent = { type: 'room' } | { type: 'turn'; turn: number };
+export type RoomEvent =
+  | { type: 'room' }
+  | { type: 'turn'; turn: number }
+  /** Players with the room open right now (checked by token), and their game teams. */
+  | { type: 'presence'; online: string[]; teams: number[] }
+  /** A piece of the turn being played right now. */
+  | { type: 'live'; chunk: LiveChunk };
+
+/** Sent by the browser over the same socket. */
+export type ClientMessage =
+  /** First message: who this is (null to just watch). */
+  | { type: 'hello'; token: string | null }
+  /** The active player streams their turn as they play it. */
+  | { type: 'live'; chunk: LiveChunk };
 
 export const TEAM_NAME_MAX = 20;
 export const SNAIL_NAME_MAX = 12;

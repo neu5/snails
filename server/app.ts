@@ -7,6 +7,7 @@ import type { WebSocket } from 'ws';
 import {
   SNAIL_NAME_MAX,
   TEAM_NAME_MAX,
+  type ClientMessage,
   type RoomEvent,
   type RoomSettings,
   type RoomStatus,
@@ -15,7 +16,16 @@ import {
   type TeamView,
 } from '../src/net/api';
 import { DEFAULT_CONFIG, DEFAULT_SNAIL_NAMES, defaultTeams } from '../src/sim/game';
-import { DesyncError, applyTurn, rebuild, type MatchRecord, type TurnRecord } from '../src/sim/turnlog';
+import {
+  DesyncError,
+  applyTurn,
+  decodeBits,
+  encodeBits,
+  rebuild,
+  type LiveChunk,
+  type MatchRecord,
+  type TurnRecord,
+} from '../src/sim/turnlog';
 import { MAX_SNAILS_PER_TEAM, MAX_TEAMS, TEAM_COLOR_COUNT, type GameConfig, type GameState } from '../src/sim/types';
 import type { Db } from './db';
 import type { Mailer } from './mail';
@@ -98,25 +108,101 @@ export async function buildApp(opts: AppOptions) {
   await app.register(fastifyWebsocket);
 
   // Live updates: everyone with the room open gets a nudge when it changes.
-  const sockets = new Map<string, Set<WebSocket>>();
-  function broadcast(roomId: string, event: RoomEvent): void {
-    const msg = JSON.stringify(event);
-    for (const ws of sockets.get(roomId) ?? []) ws.send(msg);
+  interface Viewer {
+    socket: WebSocket;
+    /** Set once the socket says hello with a valid token. */
+    playerId: string | null;
   }
+  const rooms = new Map<string, Set<Viewer>>();
+  function broadcast(roomId: string, event: RoomEvent, except?: Viewer): void {
+    const msg = JSON.stringify(event);
+    for (const v of rooms.get(roomId) ?? []) if (v !== except) v.socket.send(msg);
+  }
+
+  /** Who is online: players with at least one socket open on the room. */
+  async function sendPresence(roomId: string): Promise<void> {
+    const ids = [...new Set([...(rooms.get(roomId) ?? [])].map((v) => v.playerId).filter((id): id is string => !!id))];
+    const list = ids.length ? await players(roomId) : [];
+    const teams = list.filter((p) => ids.includes(p.id) && p.team_index !== null).map((p) => p.team_index!);
+    broadcast(roomId, { type: 'presence', online: ids, teams });
+  }
+
+  /**
+   * The turn being played right now, one packed input per tick, so late viewers can catch up
+   * from its start. Cleared when the turn is stored.
+   */
+  const liveTurns = new Map<string, { turn: number; bits: number[] }>();
+  const LIVE_MAX_TICKS = 60 * 60 * 5;
+
+  async function onLive(roomId: string, from: Viewer, chunk: LiveChunk): Promise<void> {
+    if (!from.playerId || !chunk || !Array.isArray(chunk.frames)) return;
+    const room = await getRoom(roomId);
+    if (room.status !== 'playing') return;
+    const state = await currentState(room);
+    const [p] = await db.query<PlayerRow>('SELECT * FROM players WHERE id = $1', [from.playerId]);
+    // Only the player whose move it is may stream it, and only the move that is due.
+    if (!p || p.team_index !== state.activeTeam || chunk.turn !== state.turnNumber) return;
+    let live = liveTurns.get(roomId);
+    // A chunk from tick 0 starts the turn over (first chunk, or the player reconnected).
+    if (chunk.from === 0 || !live || live.turn !== chunk.turn) live = { turn: chunk.turn, bits: [] };
+    if (chunk.from !== live.bits.length) return;
+    const bits = decodeBits(chunk.frames);
+    if (live.bits.length + bits.length > LIVE_MAX_TICKS) return;
+    live.bits.push(...bits);
+    liveTurns.set(roomId, live);
+    broadcast(roomId, { type: 'live', chunk }, from);
+  }
+
   app.get('/ws', { websocket: true }, (socket, req) => {
     const roomId = String((req.query as { room?: string }).room ?? '');
     if (!roomId) return socket.close();
-    let set = sockets.get(roomId);
-    if (!set) sockets.set(roomId, (set = new Set()));
-    set.add(socket);
+    const v: Viewer = { socket, playerId: null };
+    let set = rooms.get(roomId);
+    if (!set) rooms.set(roomId, (set = new Set()));
+    set.add(v);
+    socket.on('message', (raw) => {
+      let msg: ClientMessage;
+      try {
+        msg = JSON.parse(String(raw)) as ClientMessage;
+      } catch {
+        return;
+      }
+      void (async () => {
+        if (msg.type === 'hello') {
+          const token = typeof msg.token === 'string' ? msg.token : '';
+          const [p] = token
+            ? await db.query<PlayerRow>('SELECT * FROM players WHERE token_hash = $1 AND room_id = $2', [sha256(token), roomId])
+            : [];
+          v.playerId = p?.id ?? null;
+          await sendPresence(roomId);
+          // Joining mid-turn: everything played so far, so the watcher starts from the turn's start.
+          const live = liveTurns.get(roomId);
+          if (live) socket.send(JSON.stringify({ type: 'live', chunk: { turn: live.turn, from: 0, frames: encodeBits(live.bits) } } satisfies RoomEvent));
+        } else if (msg.type === 'live') {
+          await onLive(roomId, v, msg.chunk);
+        }
+      })().catch((e) => console.error(e));
+    });
     socket.on('close', () => {
-      set!.delete(socket);
-      if (set!.size === 0) sockets.delete(roomId);
+      set!.delete(v);
+      if (set!.size === 0) rooms.delete(roomId);
+      void sendPresence(roomId).catch((e) => console.error(e));
     });
   });
 
   // The last rebuilt state per room, so a new turn does not replay the whole match.
   const states = new Map<string, { state: GameState; turns: number }>();
+
+  /** The match as it stands (all stored turns applied); cached between turns. */
+  async function currentState(room: RoomRow): Promise<GameState> {
+    const match = await loadMatch(room);
+    let cached = states.get(room.id);
+    if (!cached || cached.turns !== match.turns.length) {
+      cached = { state: rebuild(match), turns: match.turns.length };
+      states.set(room.id, cached);
+    }
+    return cached.state;
+  }
 
   async function getRoom(id: string): Promise<RoomRow> {
     const [room] = await db.query<RoomRow>('SELECT * FROM rooms WHERE id = $1', [id]);
@@ -423,6 +509,7 @@ export async function buildApp(opts: AppOptions) {
         throw new HttpError(409, 'someone else sent that turn first');
       }
       states.set(room.id, { state: cached.state, turns: turn.turn });
+      liveTurns.delete(room.id);
       const state = cached.state;
       if (state.phase === 'gameover') await db.query("UPDATE rooms SET status = 'over' WHERE id = $1", [room.id]);
       broadcast(room.id, { type: 'turn', turn: turn.turn });

@@ -9,7 +9,16 @@ import { LocalMatchStore, MemoryMatchStore, type MatchStore } from './net/store'
 import { teamColor } from './render/palette';
 import { Renderer, VIEW_H, VIEW_W } from './render/renderer';
 import { DEFAULT_CONFIG, TICK_RATE, createGame } from './sim/game';
-import { TurnPlayback, TurnRecorder, applyTurn, rebuild, type MatchRecord, type TurnRecord } from './sim/turnlog';
+import {
+  LiveTurn,
+  TurnPlayback,
+  TurnRecorder,
+  applyTurn,
+  rebuild,
+  type LiveChunk,
+  type MatchRecord,
+  type TurnRecord,
+} from './sim/turnlog';
 import type { GameConfig, GameState } from './sim/types';
 
 const params = new URLSearchParams(location.search);
@@ -116,7 +125,19 @@ type Mode =
   /** A local player (or bot) drives the sim; finished turns go to the store. */
   | { kind: 'live'; recorder: TurnRecorder }
   /** Stored turns play back at normal speed. `resume` is set when only re-watching (P). */
-  | { kind: 'replay'; playback: TurnPlayback; queue: TurnRecord[]; resume: { state: GameState; mode: Mode } | null }
+  | {
+      kind: 'replay';
+      playback: TurnPlayback;
+      queue: TurnRecord[];
+      resume: { state: GameState; mode: Mode } | null;
+      /** The end of a turn that was being watched live. */
+      wasLive?: boolean;
+    }
+  /**
+   * Online: someone else's move while they are still making it, played from a buffer a couple
+   * of seconds behind them so it runs smoothly. `stalled` while the buffer refills.
+   */
+  | { kind: 'watch'; live: LiveTurn; stalled: boolean }
   /** Someone else's move; the sim is frozen until it arrives. */
   | { kind: 'waiting'; error?: string };
 
@@ -126,6 +147,18 @@ let state: GameState;
 let applied = 0;
 let mode: Mode = { kind: 'waiting' };
 let bots = new Map<number, Bot>();
+
+/** Online: our own turn goes out in a chunk this often (ticks)... */
+const LIVE_SEND_EVERY = 15;
+/** ...and a turn being watched starts once this much of it (2.5 s) is buffered... */
+const LIVE_PLAYOUT_TICKS = 150;
+/** ...or, after running dry, once this much has come in again. */
+const LIVE_REFILL_TICKS = 60;
+/** Online only: the socket, and the turn being played elsewhere as it arrives. */
+let serverStore: ServerMatchStore | null = null;
+let incoming: LiveChunk[] = [];
+let incomingTicks = 0;
+let liveSendTick = 0;
 
 function configFromUrl(seed: number): Partial<GameConfig> {
   // ?mode=infinite: no weapon limits.
@@ -283,14 +316,70 @@ const watchStore = () =>
     match = m;
     if (mode.kind === 'replay' && !mode.resume) {
       mode.queue.push(...fresh);
-    } else {
-      if (mode.kind === 'replay' && mode.resume) {
-        state = mode.resume.state;
-        renderer.reset();
-      }
-      playQueue(fresh, null);
+      return;
     }
+    if (mode.kind === 'replay' && mode.resume) {
+      state = mode.resume.state;
+      mode = mode.resume.mode;
+      renderer.reset();
+    }
+    clearIncoming();
+    if (mode.kind === 'watch') {
+      // Watched live: carry on from where we are with the finished turn, or replay it whole
+      // if what we saw does not match it.
+      const rest = mode.live.finish(fresh[0]);
+      if (rest) {
+        mode = { kind: 'replay', playback: rest, queue: fresh.slice(1), resume: null, wasLive: true };
+        return;
+      }
+      state = rebuild(match, applied);
+      renderer.reset();
+    }
+    playQueue(fresh, null);
   });
+
+function clearIncoming(): void {
+  incoming = [];
+  incomingTicks = 0;
+}
+
+/** The turn being watched live, also while re-watching an older one with P. */
+function watching(): LiveTurn | null {
+  if (mode.kind === 'watch') return mode.live;
+  if (mode.kind === 'replay' && mode.resume?.mode.kind === 'watch') return mode.resume.mode.live;
+  return null;
+}
+
+/** A piece of the turn someone else is playing right now. */
+function onLive(chunk: LiveChunk): void {
+  if (chunk.from === 0 || chunk.turn !== incoming[0]?.turn) {
+    // A new turn, or the same one started over (its player reconnected).
+    if (watching()) {
+      if (mode.kind === 'replay') mode = mode.resume!.mode;
+      state = rebuild(match, applied);
+      mode = { kind: 'waiting' };
+      renderer.reset();
+    }
+    clearIncoming();
+  }
+  if (chunk.from !== incomingTicks) return;
+  incoming.push(chunk);
+  for (let i = 1; i < chunk.frames.length; i += 2) incomingTicks += chunk.frames[i];
+  watching()?.add(chunk);
+}
+
+/** Starts watching someone else's turn once enough of it is buffered to play smoothly. */
+function maybeWatch(): void {
+  if (mode.kind !== 'waiting' || mode.error || !incoming.length || state.phase === 'gameover') return;
+  if (incoming[0].turn !== state.turnNumber || isLocal(state.activeTeam) || incomingTicks < LIVE_PLAYOUT_TICKS) return;
+  try {
+    const live = new LiveTurn(state, incoming[0].turn);
+    for (const c of incoming) live.add(c);
+    mode = { kind: 'watch', live, stalled: false };
+  } catch (e) {
+    fail(e);
+  }
+}
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) document.title = baseTitle;
@@ -337,8 +426,13 @@ function statusLine(): Renderer['status'] {
       return null;
     case 'replay': {
       const t = mode.playback.record;
+      if (mode.wasLive) return { text: `${teamName(t.team)} is playing now`, color: teamColor(state, t.team) };
       const what = mode.resume ? `Replay of turn ${t.turn}` : `${teamName(t.team)}'s move (turn ${t.turn})`;
       return { text: `${what}  ·  ${touch ? 'tap ⏭' : 'Esc'} to skip`, color: teamColor(state, t.team) };
+    }
+    case 'watch': {
+      const who = teamName(state.activeTeam);
+      return { text: `${who} is playing now${mode.stalled ? '  ·  catching up…' : ''}`, color: teamColor(state, state.activeTeam) };
     }
     case 'waiting':
       if (mode.error) return { text: `Replay failed: ${mode.error}`, color: '#ff6b6b' };
@@ -351,10 +445,32 @@ function tick(): void {
   switch (mode.kind) {
     case 'live': {
       const bot = bots.get(state.activeTeam);
-      const { events, turn } = mode.recorder.step(bot ? bot.input(state) : keyboard.sample());
+      const { recorder } = mode;
+      const { events, turn } = recorder.step(bot ? bot.input(state) : keyboard.sample());
       renderer.handleEvents(state, events);
       sound.handleEvents(state, events);
+      // Online: let the others watch this turn as it happens.
+      if (serverStore && !turn && ++liveSendTick % LIVE_SEND_EVERY === 0) {
+        const chunk = recorder.takeLive();
+        if (chunk) serverStore.sendLive(chunk);
+      }
       if (turn) commit(turn);
+      break;
+    }
+    case 'watch': {
+      const w = mode;
+      if (w.live.buffered === 0 || (w.stalled && w.live.buffered < LIVE_REFILL_TICKS)) {
+        w.stalled = true;
+        break;
+      }
+      w.stalled = false;
+      try {
+        const events = w.live.step();
+        renderer.handleEvents(state, events);
+        sound.handleEvents(state, events);
+      } catch (e) {
+        fail(e);
+      }
       break;
     }
     case 'replay': {
@@ -374,6 +490,7 @@ function tick(): void {
       break;
     }
     case 'waiting':
+      maybeWatch();
       break;
   }
 }
@@ -430,7 +547,14 @@ if (inLobby) {
     asyncPlay = true;
     myTeam = seat.teamIndex;
     matchId = seat.roomId;
-    store = new ServerMatchStore(seat.roomId, seat.token);
+    serverStore = new ServerMatchStore(seat.roomId, seat.token);
+    serverStore.onLive = onLive;
+    serverStore.onPresence = (teams) => (renderer.online = new Set(teams));
+    // Back after a dropped connection: send the turn in progress again from its start.
+    serverStore.onConnect = () => {
+      if (mode.kind === 'live') mode.recorder.resendLive();
+    };
+    store = serverStore;
     void startGame();
   });
 } else {

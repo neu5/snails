@@ -108,6 +108,8 @@ export class Renderer {
   uiScale = 1;
   /** Touch device: hide key hints. */
   touch = false;
+  /** Online: teams whose player has the game open now (a green dot by the name); null offline. */
+  online: Set<number> | null = null;
   readonly camera = new Camera(VIEW_W, VIEW_H, { x0: -CAM_MARGIN, y0: -CAM_SKY, x1: MAP_W + CAM_MARGIN, y1: MAP_H });
   /** Whole map on screen (M); stays until toggled off. */
   private overview = false;
@@ -1343,6 +1345,13 @@ export class Renderer {
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'right';
         ctx.fillText(t.name, -168, y + 13);
+        if (this.online) {
+          const here = this.online.has(i);
+          ctx.fillStyle = here ? '#5be37a' : '#ffffff40';
+          ctx.beginPath();
+          ctx.arc(170, y + 9, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
       });
     });
 

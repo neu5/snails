@@ -92,8 +92,32 @@ function endsTurn(events: SimEvent[]): boolean {
  * Wraps `step` for the side that plays live: records every tick of the current turn and
  * hands back a TurnRecord on the tick that ends it, then starts recording the next turn.
  */
+/** A piece of a turn still being played, sent to people watching it live. */
+export interface LiveChunk {
+  turn: number;
+  /** Index of the chunk's first tick in the turn. */
+  from: number;
+  /** Run-length encoded packed inputs, like TurnRecord.frames. */
+  frames: number[];
+}
+
+export function encodeBits(bits: number[]): number[] {
+  const rle: number[] = [];
+  for (const b of bits) pushRun(rle, b);
+  return rle;
+}
+
+export function decodeBits(rle: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < rle.length; i += 2) for (let k = 0; k < rle[i + 1]; k++) out.push(rle[i]);
+  return out;
+}
+
 export class TurnRecorder {
   private rle: number[] = [];
+  /** This turn's packed inputs one per tick, and how many takeLive has handed out. */
+  private live: number[] = [];
+  private sent = 0;
   private turn = 0;
   private team = 0;
   private snailId = 0;
@@ -107,7 +131,9 @@ export class TurnRecorder {
     if (s.phase === 'gameover') return { events: step(s, EMPTY_INPUT), turn: null };
     // Store only what the current phase listens to; it keeps runs long.
     const effective = effectiveInput(s, input);
-    pushRun(this.rle, packInput(effective));
+    const bits = packInput(effective);
+    pushRun(this.rle, bits);
+    this.live.push(bits);
     const events = step(s, effective);
     if (!endsTurn(events)) return { events, turn: null };
     const turn: TurnRecord = {
@@ -121,8 +147,26 @@ export class TurnRecorder {
     return { events, turn };
   }
 
+  /**
+   * The ticks of the turn in progress not handed out yet, for live viewers. The tick that ends
+   * a turn is never in a chunk: viewers finish the turn from its TurnRecord.
+   */
+  takeLive(): LiveChunk | null {
+    if (this.sent >= this.live.length) return null;
+    const chunk = { turn: this.turn, from: this.sent, frames: encodeBits(this.live.slice(this.sent)) };
+    this.sent = this.live.length;
+    return chunk;
+  }
+
+  /** Hands out the whole turn so far again from tick 0 (after a reconnect). */
+  resendLive(): void {
+    this.sent = 0;
+  }
+
   private begin(): void {
     this.rle = [];
+    this.live = [];
+    this.sent = 0;
     this.turn = this.state.turnNumber;
     this.team = this.state.activeTeam;
     this.snailId = this.state.activeSnailId;
@@ -135,18 +179,22 @@ export class TurnRecorder {
  */
 export class TurnPlayback {
   private frames: InputFrame[];
-  private i = 0;
+  private i: number;
 
+  /** `startAt` ticks of the turn were already played on `state` (watched live). */
   constructor(
     private state: GameState,
     readonly record: TurnRecord,
+    startAt = 0,
   ) {
+    this.i = startAt;
     if (state.phase === 'gameover') throw new DesyncError(record.turn, 'game is already over');
     if (record.turn !== state.turnNumber || record.team !== state.activeTeam || record.snailId !== state.activeSnailId) {
       throw new DesyncError(record.turn, `expected turn ${state.turnNumber} of team ${state.activeTeam}`);
     }
     this.frames = decodeFrames(record.frames);
     if (this.frames.length === 0) throw new DesyncError(record.turn, 'no frames');
+    if (startAt >= this.frames.length) throw new DesyncError(record.turn, 'watched past the end of the turn');
   }
 
   get done(): boolean {
@@ -161,6 +209,57 @@ export class TurnPlayback {
     if (last && !ended) throw new DesyncError(this.record.turn, 'did not end on its last frame');
     if (last && hashState(this.state) !== this.record.hash) throw new DesyncError(this.record.turn, 'state hash mismatch');
     return events;
+  }
+}
+
+/**
+ * Plays a turn while its player is still playing it: ticks arrive in chunks (LiveChunk). Once
+ * the turn's TurnRecord arrives, `finish` hands over to a TurnPlayback from the same tick.
+ */
+export class LiveTurn {
+  private bits: number[] = [];
+  private i = 0;
+
+  constructor(
+    private state: GameState,
+    readonly turn: number,
+  ) {
+    if (state.turnNumber !== turn) throw new DesyncError(turn, `expected turn ${state.turnNumber}`);
+  }
+
+  /** Ticks played so far. */
+  get played(): number {
+    return this.i;
+  }
+
+  /** Ticks received but not played yet. */
+  get buffered(): number {
+    return this.bits.length - this.i;
+  }
+
+  /** Adds a chunk; returns false if it does not follow on from what came before. */
+  add(chunk: LiveChunk): boolean {
+    if (chunk.turn !== this.turn || chunk.from !== this.bits.length) return false;
+    this.bits.push(...decodeBits(chunk.frames));
+    return true;
+  }
+
+  step(): SimEvent[] {
+    const events = step(this.state, unpackInput(this.bits[this.i++]));
+    if (endsTurn(events)) throw new DesyncError(this.turn, 'a live chunk ended the turn');
+    return events;
+  }
+
+  /**
+   * Continues with the finished turn from where live play got to, or null when the record does
+   * not start with the ticks already played (then the turn must be replayed from its start).
+   */
+  finish(record: TurnRecord): TurnPlayback | null {
+    if (record.turn !== this.turn) return null;
+    const recorded = decodeBits(record.frames);
+    for (let k = 0; k < this.i; k++) if (recorded[k] !== this.bits[k]) return null;
+    if (this.i >= recorded.length) return null;
+    return new TurnPlayback(this.state, record, this.i);
   }
 }
 
