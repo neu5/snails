@@ -1,6 +1,8 @@
 import { GRAVES, drawGrave } from '../render/graves';
+import { THEMES, type Theme } from '../render/themes';
 import { TEAM_COLORS } from '../render/renderer';
 import { TEAM_NAMES } from '../sim/game';
+import { MAP_STYLES, type MapStyle } from '../sim/terrain';
 import type { GameConfig } from '../sim/types';
 
 /** default: the usual weapon limits. infinite: every weapon unlimited, for trying things out. */
@@ -20,6 +22,36 @@ export const START_HP = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 export function gravesFromUrl(value: string | null): number[] {
   const picked = (value ?? '').split(',').map(Number);
   return TEAM_NAMES.map((_, i) => (Number.isInteger(picked[i]) && picked[i] >= 0 && picked[i] < GRAVES.length ? picked[i] : 0));
+}
+
+export const MAPS: { id: MapStyle; name: string; note: string }[] = [
+  { id: 'island', name: 'Island', note: 'One big island' },
+  { id: 'islands', name: 'Islands', note: 'Sea between 3-4' },
+  { id: 'cavern', name: 'Cavern', note: 'Rock roof, pits' },
+  { id: 'canyon', name: 'Canyon', note: 'Gorge and arch' },
+];
+
+/** Paints a small cut through a theme's ground: sky, surface and what lies below. */
+function paintTheme(ctx: CanvasRenderingContext2D, theme: Theme): void {
+  const g = ctx.createLinearGradient(0, 0, 0, 40);
+  theme.sky.forEach((c, i) => g.addColorStop(i / 2, c));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 40, 40);
+  for (let x = 0; x < 40; x++) {
+    const top = 12 + Math.round(3 * Math.sin(x * 0.25));
+    for (let y = top; y < 40; y++) {
+      // Sample further into the ground than the preview is deep, so its pattern shows.
+      const n = ((x * 73856093) ^ (y * 19349663)) & 0xff;
+      const c = theme.ground(x * 3, y * 3, y - top, n);
+      ctx.fillStyle = `rgb(${c >> 16},${(c >> 8) & 255},${c & 255})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+}
+
+/** The map from `?map=`; anything unknown is the island. */
+export function mapFromUrl(value: string | null): MapStyle {
+  return MAP_STYLES.includes(value as MapStyle) ? (value as MapStyle) : 'island';
 }
 
 /** What a mode changes in the game config (`?mode=` in the URL). */
@@ -49,17 +81,19 @@ const CSS = `
 /* Two even rows of five. */
 .lobby .hp { max-width: 272px; }
 .lobby .graves button { width: 48px; height: 52px; padding: 0; }
+.lobby .themes button { padding: 4px; }
+.lobby .themes canvas { display: block; border-radius: 6px; }
 .lobby .graves canvas { display: block; margin: 0 auto; }
 .lobby h2.team { margin-top: 10px; }
 .lobby .start { margin-top: 22px; width: 100%; background: #c4571c; font-weight: bold; font-size: 17px; }
 `;
 
 /**
- * Test lobby (`?test=1`): pick snails per team, starting HP, a game mode and each team's grave, then start a hot-seat game
+ * Test lobby (`?test=1`): pick snails per team, starting HP, a map and its look, a game mode and each team's grave, then start a hot-seat game
  * with those settings in the URL. Choices are remembered for next time.
  */
 export function showTestLobby(): void {
-  let choice = { snails: 3, hp: 100, mode: 'default' as GameMode, graves: [0, 0] };
+  let choice = { snails: 3, hp: 100, mode: 'default' as GameMode, map: 'island' as MapStyle, theme: 'any', graves: [0, 0] };
   try {
     choice = { ...choice, ...JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') };
   } catch {
@@ -83,6 +117,8 @@ export function showTestLobby(): void {
       snails: String(choice.snails),
       hp: String(choice.hp),
       mode: choice.mode,
+      map: choice.map,
+      theme: choice.theme,
       graves: choice.graves.join(','),
       lobby: 'test',
     });
@@ -150,6 +186,20 @@ export function showTestLobby(): void {
       'hp',
       START_HP.map((hp) => ({ label: String(hp), on: choice.hp === hp, set: () => (choice.hp = hp) })),
     );
+    pick(
+      'Map',
+      'maps',
+      MAPS.map((m) => ({ label: m.name, note: m.note, on: choice.map === m.id, set: () => (choice.map = m.id) })),
+    );
+    pick('Look', 'themes', [
+      { label: 'Any', note: 'Suits the map', on: choice.theme === 'any', set: () => (choice.theme = 'any') },
+      ...THEMES.map((t) => ({
+        label: t.name,
+        on: choice.theme === t.id,
+        set: () => (choice.theme = t.id),
+        paint: (ctx: CanvasRenderingContext2D) => paintTheme(ctx, t),
+      })),
+    ]);
     pick(
       'Game',
       'modes',

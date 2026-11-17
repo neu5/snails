@@ -163,9 +163,10 @@ function snailHitsTerrain(t: Terrain, x: number, y: number): boolean {
   return false;
 }
 
+/** The first place from the top where a snail can stand in this column (under a cave roof too). */
 function findSurfaceY(t: Terrain, x: number): number | null {
   for (let y = SNAIL_R; y < WATER_Y - SNAIL_R; y++) {
-    if (snailHitsTerrain(t, x, y + 1)) return snailHitsTerrain(t, x, y) ? null : y;
+    if (snailHitsTerrain(t, x, y + 1) && !snailHitsTerrain(t, x, y)) return y;
   }
   return null;
 }
@@ -173,7 +174,10 @@ function findSurfaceY(t: Terrain, x: number): number | null {
 export function createGame(partial: Partial<GameConfig> = {}): GameState {
   const config: GameConfig = { ...DEFAULT_CONFIG, ...partial };
   const rng = new Rng(config.seed >>> 0);
-  const terrain = generateTerrain(MAP_W, MAP_H, WATER_Y, rng);
+  const style = config.map ?? 'island';
+  const terrain = generateTerrain(MAP_W, MAP_H, WATER_Y, rng, style);
+  // Islands and caves reach further out than the one big island.
+  const spawnEdge = style === 'islands' || style === 'cavern' ? 0.08 : 0.2;
 
   const snails: Snail[] = [];
   const teamCount = 2;
@@ -185,7 +189,7 @@ export function createGame(partial: Partial<GameConfig> = {}): GameState {
     let y: number | null = null;
     for (let attempt = 0; attempt < 400; attempt++) {
       // Away from the coasts, which slope down into the sea.
-      x = Math.floor(rng.range(MAP_W * 0.2, MAP_W * 0.8));
+      x = Math.floor(rng.range(MAP_W * spawnEdge, MAP_W * (1 - spawnEdge)));
       if (usedX.some((u) => Math.abs(u - x) < 70) && attempt < 300) continue;
       y = findSurfaceY(terrain, x);
       if (y !== null && y < WATER_Y - 120) break;

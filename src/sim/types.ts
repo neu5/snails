@@ -1,4 +1,4 @@
-import type { Terrain } from './terrain';
+import type { MapStyle, Terrain } from './terrain';
 
 /**
  * Per-tick input for the active player. This is the only thing that crosses the
@@ -209,6 +209,10 @@ export interface GameConfig {
   ammo: Ammo;
   /** Each team's grave marker (an index into the renderer's GRAVES); looks only. */
   graves: number[];
+  /** Kind of map; the seed shapes it. Missing means 'island'. */
+  map?: MapStyle;
+  /** How the map looks (a renderer theme id); looks only. Missing: picked from the seed. */
+  theme?: string;
 }
 
 export type Ammo = Partial<Record<WeaponId, number>>;
