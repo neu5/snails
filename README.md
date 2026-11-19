@@ -81,12 +81,27 @@ On a phone, hold it sideways: on-screen buttons appear for walking, aiming, jump
 firing; tap the weapon box to slide out the weapon drawer, then tap a weapon. The top row has replay last move, skip replay, new map,
 whole map (🗺) and full screen. Drag the map with one finger, pinch to zoom. `?touch=1` shows the buttons on a desktop too.
 
-Test lobby: open `?test=1` to pick snails per team (1-4), starting HP (10-100), each team's grave
+Maps (every seed makes a new one of the kind):
+
+| Map | What it is |
+| --- | --- |
+| Island | One big island with caves, coasts sloping into the sea |
+| Islands | Three or four islands with sea between them; small ledges over the gaps help to cross (rope, platform and parachute help more) |
+| Cavern | A closed cave: rock roof (shots stop there) and walls, stalactites, a pillar or two, and pits down to the water |
+| Canyon | Two high cliffs either side of a deep gorge, a thin rock arch across it, ledges down in the gorge |
+
+Each map also gets a look: **Meadow** (grass and soil), **Desert** (sandstone layers),
+**Snow** (snow over icy rock), **Stone** (moss over uneven stone blocks), **Volcano** (ash over
+basalt with lava veins, and lava instead of water) or **Jungle** (moss over loam with roots).
+Each look brings its own sky, hills and water. If none is picked, the seed picks one that suits
+the map (caverns are Stone, Volcano or Snow).
+
+Test lobby: open `?test=1` to pick snails per team (1-4), starting HP (10-100), the map and its look, each team's grave
 (Shell, Stone, Cross, Daisy, Toadstool, Urn; also `?graves=1,4`) and the game: **Default** (weapon
 limits) or **Infinite** (no limits), then Start (or Enter). In a game started from there, L
 goes back to the lobby; R gives a new map with the same settings.
 
-URL options: `?mode=infinite` (no weapon limits), `?seed=123` (fixed map), `?hp=60`, `?snails=2` (per team, 1-4),
+URL options: `?map=islands|cavern|canyon`, `?theme=meadow|desert|snow|stone|volcano|jungle`, `?mode=infinite` (no weapon limits), `?seed=123` (fixed map), `?hp=60`, `?snails=2` (per team, 1-4),
 `?turn=20` (seconds), `?bots=1` (team 2 is a bot) or `?bots=0,1` (bot vs bot).
 
 ## Async play (local prototype)

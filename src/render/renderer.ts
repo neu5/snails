@@ -1,5 +1,6 @@
 import { GIRDER_LEN, girderBlocked, HOMING_FUEL, MAP_H, ammoLeft, MAP_W, MINE_ARM_TICKS, girderSpot, SNAIL_R, TICK_RATE, WATER_Y, activeSnail, aimVector, isCharged } from '../sim/game';
 import { Camera } from './camera';
+import { themeFor, type Theme } from './themes';
 import { drawGrave } from './graves';
 import { WEAPONS, WEAPON_ROWS, type GameState, type Projectile, type SimEvent, type Snail, type WeaponId } from '../sim/types';
 
@@ -127,10 +128,17 @@ export class Renderer {
     this.terrainCanvas = document.createElement('canvas');
     this.terrainCanvas.width = MAP_W;
     this.terrainCanvas.height = MAP_H;
-    this.sky = this.ctx.createLinearGradient(0, 0, 0, VIEW_H);
-    this.sky.addColorStop(0, '#2b2d5c');
-    this.sky.addColorStop(0.55, '#7a5d9e');
-    this.sky.addColorStop(1, '#f0a37a');
+    this.sky = this.skyFor(themeFor({ seed: 0 }));
+  }
+
+  private skyTheme = '';
+  private skyFor(theme: Theme): CanvasGradient {
+    const g = this.ctx.createLinearGradient(0, 0, 0, VIEW_H);
+    g.addColorStop(0, theme.sky[0]);
+    g.addColorStop(0.55, theme.sky[1]);
+    g.addColorStop(1, theme.sky[2]);
+    this.skyTheme = theme.id;
+    return g;
   }
 
   /** A short message in the banner spot, e.g. "Sound: off". */
@@ -358,6 +366,8 @@ export class Renderer {
   }
 
   private rebuildTerrain(state: GameState): void {
+    const underground = state.config.map === 'cavern';
+    const theme = themeFor(state.config);
     const t = state.terrain;
     const tctx = this.terrainCanvas.getContext('2d')!;
     const img = tctx.createImageData(t.w, t.h);
@@ -368,7 +378,8 @@ export class Renderer {
         const i = y * t.w + x;
         if (!d[i]) continue;
         let depth = 0;
-        while (depth < 10 && y - depth - 1 >= 0 && d[i - (depth + 1) * t.w]) depth++;
+        // In a cavern the rock goes on above the map, so its top edge gets no grass.
+        while (depth < 10 && (y - depth - 1 < 0 ? underground : d[i - (depth + 1) * t.w])) depth++;
         const edge = (x > 0 && !d[i - 1]) || (x < t.w - 1 && !d[i + 1]) || (y < t.h - 1 && !d[i + t.w]);
         const n = ((x * 73856093) ^ (y * 19349663)) & 0xff;
         let r: number, g: number, b: number;
@@ -376,16 +387,9 @@ export class Renderer {
           // Placed platform: riveted steel.
           const rivet = ((x >> 3) + (y >> 2)) % 5 === 0;
           r = rivet ? 200 : 150; g = rivet ? 205 : 158; b = rivet ? 215 : 170;
-        } else if (depth < 4) {
-          r = 92; g = 196; b = 92;
-        } else if (depth < 7) {
-          r = 58; g = 140; b = 64;
         } else {
-          const stripe = ((x + y * 2) >> 4) & 1;
-          r = 120 + (n & 15) - stripe * 10;
-          g = 84 + (n & 15) - stripe * 8;
-          b = 58 + (n & 7);
-          if (((x * 7 + y * 13) & 63) === 0) { r = 170; g = 150; b = 120; }
+          const c = theme.ground(x, y, depth, n);
+          r = c >> 16; g = (c >> 8) & 255; b = c & 255;
         }
         if (edge) { r *= 0.6; g *= 0.6; b *= 0.6; }
         const o = i * 4;
@@ -410,12 +414,16 @@ export class Renderer {
       this.shake *= 0.85;
       if (this.shake < 0.5) this.shake = 0;
     }
+    const theme = themeFor(state.config);
+    if (theme.id !== this.skyTheme) this.sky = this.skyFor(theme);
     ctx.fillStyle = this.sky;
     ctx.fillRect(-20, -20, VIEW_W + 40, VIEW_H + 40);
     ctx.translate(VIEW_W / 2, VIEW_H / 2);
     ctx.scale(cam.zoom, cam.zoom);
     ctx.translate(-cam.x, -cam.y);
-    this.drawBackdrop(ctx);
+    if (state.config.map === 'cavern') this.drawCaveBackdrop(ctx, theme);
+    else this.drawBackdrop(ctx, theme);
+    if (state.config.map === 'cavern') this.drawRockAround(ctx, theme);
     ctx.drawImage(this.terrainCanvas, 0, 0);
 
     this.drawRope(ctx, state);
@@ -427,18 +435,51 @@ export class Renderer {
     this.drawTracers(ctx);
     this.drawAim(ctx, state);
     this.drawParticles(ctx);
-    this.drawWater(ctx);
+    this.drawWater(ctx, theme);
     ctx.restore();
 
     this.drawHud(ctx, state);
     this.drawWeaponMenu(ctx, state);
   }
 
-  private drawBackdrop(ctx: CanvasRenderingContext2D): void {
+  /** A cavern is underground: solid rock above and beside the map, wherever the camera looks. */
+  private drawRockAround(ctx: CanvasRenderingContext2D, theme: Theme): void {
+    const v = this.camera.visible();
+    ctx.fillStyle = theme.outside;
+    if (v.y0 < 0) ctx.fillRect(v.x0 - 10, v.y0 - 10, v.x1 - v.x0 + 20, -v.y0 + 10);
+    if (v.x0 < 0) ctx.fillRect(v.x0 - 10, 0, -v.x0 + 10, WATER_Y + 20);
+    if (v.x1 > MAP_W) ctx.fillRect(MAP_W, 0, v.x1 - MAP_W + 10, WATER_Y + 20);
+  }
+
+  /** Inside a cavern: dark back wall with faint rock shapes and a few glowing specks. */
+  private drawCaveBackdrop(ctx: CanvasRenderingContext2D, theme: Theme): void {
+    const g = ctx.createLinearGradient(0, 0, 0, MAP_H);
+    g.addColorStop(0, theme.cave[0]);
+    g.addColorStop(1, theme.cave[1]);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, MAP_W, MAP_H);
+    ctx.fillStyle = '#ffffff08';
+    for (let i = 0; i < 40; i++) {
+      const x = (i * 677) % MAP_W;
+      const y = MAP_H * 0.2 + ((i * 263) % (MAP_H * 0.5));
+      ctx.beginPath();
+      ctx.ellipse(x, y, 60 + ((i * 31) % 90), 30 + ((i * 17) % 40), (i % 5) * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (let i = 0; i < 60; i++) {
+      const x = (i * 431 + 97) % MAP_W;
+      const y = MAP_H * 0.18 + ((i * 197) % (MAP_H * 0.5));
+      const glow = 0.25 + 0.2 * Math.sin(this.frame * 0.03 + i);
+      ctx.fillStyle = `rgba(140, 220, 255, ${glow})`;
+      ctx.fillRect(x, y, 2, 2);
+    }
+  }
+
+  private drawBackdrop(ctx: CanvasRenderingContext2D, theme: Theme): void {
     const v = this.camera.visible();
     const x0 = -CAM_MARGIN;
     const span = MAP_W + CAM_MARGIN * 2 + 300;
-    ctx.fillStyle = '#ffffff14';
+    ctx.fillStyle = theme.clouds;
     const clouds = Math.ceil(span / 260);
     for (let i = 0; i < clouds; i++) {
       const x = x0 + ((i * 260 + this.frame * 0.15 * (1 + (i % 3))) % span) - 150;
@@ -449,7 +490,7 @@ export class Renderer {
       ctx.fill();
     }
     // Distant hills, a little past whatever is on screen.
-    ctx.fillStyle = '#3d2f5a';
+    ctx.fillStyle = theme.hills;
     ctx.beginPath();
     const left = Math.floor(v.x0 / 40) * 40 - 40;
     const right = v.x1 + 40;
@@ -460,18 +501,18 @@ export class Renderer {
     ctx.fill();
   }
 
-  private drawWater(ctx: CanvasRenderingContext2D): void {
+  private drawWater(ctx: CanvasRenderingContext2D, theme: Theme): void {
     const v = this.camera.visible();
     const left = Math.floor(v.x0 / 16) * 16 - 16;
     const right = v.x1 + 16;
     const bottom = Math.max(MAP_H, v.y1) + 20;
-    ctx.fillStyle = '#2d6fa8cc';
+    ctx.fillStyle = theme.water[0];
     ctx.beginPath();
     ctx.moveTo(left, bottom);
     for (let x = left; x <= right; x += 16) ctx.lineTo(x, WATER_Y + 3 * Math.sin(x * 0.04 + this.frame * 0.06));
     ctx.lineTo(right, bottom);
     ctx.fill();
-    ctx.fillStyle = '#1d4f80';
+    ctx.fillStyle = theme.water[1];
     ctx.fillRect(left, WATER_Y + 14, right - left, bottom - WATER_Y);
   }
 
